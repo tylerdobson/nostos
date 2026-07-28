@@ -9,6 +9,7 @@ import { PostChain } from './render/post.js';
 import { Sky } from './render/sky.js';
 import { Ocean } from './render/ocean.js';
 import { attachDebug } from './core/debug.js';
+import { AssetLibrary, MANIFEST } from './core/assets.js';
 import { buildShip, updateShip, SHIP } from './world/ship.js';
 import { RowerBank, Crewman, ROSTER } from './world/crew.js';
 import { Vessel, Wind, headingToBearing, compassPoint, wrapPi } from './game/vessel.js';
@@ -89,6 +90,12 @@ class Game {
     await progress(0.30, 'pouring the sea');
     this.ocean = new Ocean(this.renderer, { quality: this.quality });
     this.scene.add(this.ocean.mesh);
+
+    await progress(0.44, 'unlading the hold');
+    // Authored assets. An empty or partly-failed manifest still boots — the
+    // voyage must never be blocked by one bad export.
+    this.assets = new AssetLibrary(this.renderer);
+    await this.assets.load(MANIFEST, (f, id) => progress(0.44 + f * 0.08, id));
 
     await progress(0.52, 'laying the keel');
     this.ship = buildShip(this.quality);
