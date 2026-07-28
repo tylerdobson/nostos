@@ -4,6 +4,8 @@
 // sampled and cost measured without depending on the tab being focused.
 // ---------------------------------------------------------------------------
 
+import * as THREE from 'three';
+
 export function attachDebug(game) {
   const g = game;
   const gl = () => g.renderer.getContext();
@@ -99,6 +101,162 @@ export function attachDebug(game) {
         body: JSON.stringify({ name, dataUrl }),
       });
       return r.ok ? await r.text() : 'capture failed: ' + r.status;
+    },
+
+    // --- authored-asset inspection -------------------------------------
+    // These exist so a Blender export can be judged in situ, under the same
+    // sky, exposure and post chain as the game itself. A viewport render in
+    // Blender proves nothing about how the thing reads here.
+
+    /** Every asset the library holds, with checklist-relevant stats. */
+    assets() {
+      if (!g.assets) return { error: 'no asset library' };
+      const out = [];
+      for (const [id, e] of g.assets.entries) {
+        out.push(e.error ? { id, error: e.error } : g.assets.stats(id));
+      }
+      return out;
+    },
+
+    /**
+     * Drop an asset into the world just in front of the camera and look at it.
+     * `dist` is metres — set it to the distance the player actually meets the
+     * object at, not whatever flatters it.
+     */
+    inspect(id, { dist = 0.6, lift = 0, spin = 0 } = {}) {
+      if (!g.assets) return { error: 'no asset library' };
+      d.clearInspect();
+      const obj = g.assets.instance(id);
+      if (!obj) return { error: 'missing asset ' + id };
+
+      const cam = g.camera;
+      const fwd = new THREE.Vector3();
+      cam.getWorldDirection(fwd);
+      obj.position.copy(cam.position).addScaledVector(fwd, dist);
+      obj.position.y += lift;
+      obj.rotation.y = spin;
+      g.scene.add(obj);
+      d._inspect = obj;
+      d.step(2);
+
+      const s = g.assets.stats(id);
+      // how much of the frame it fills at this distance, so the checklist's
+      // "judge at intended coverage" rule can actually be applied
+      const r = Math.max(...(s.size || [0.1])) * 0.5;
+      const halfH = dist * Math.tan((cam.fov * Math.PI / 180) * 0.5);
+      return { ...s, dist, coverage: +(r / halfH * 100).toFixed(1) + '%' };
+    },
+
+    /** Hold it like the player would: parented to the camera, in the corner. */
+    hold(id, { x = 0.22, y = -0.20, z = -0.42, rx = 0, ry = 0, rz = 0 } = {}) {
+      if (!g.assets) return { error: 'no asset library' };
+      d.clearInspect();
+      const obj = g.assets.instance(id);
+      if (!obj) return { error: 'missing asset ' + id };
+      obj.position.set(x, y, z);
+      obj.rotation.set(rx, ry, rz);
+      g.camera.add(obj);
+      if (!g.scene.children.includes(g.camera)) g.scene.add(g.camera);
+      d._inspect = obj;
+      d._inspectHeld = true;
+      d.step(2);
+      return g.assets.stats(id);
+    },
+
+    clearInspect() {
+      if (d._inspect) {
+        d._inspect.removeFromParent();
+        d._inspect = null;
+        d._inspectHeld = false;
+      }
+      return true;
+    },
+
+    /**
+     * Measure whether a LOD actually holds its silhouette.
+     *
+     * "Silhouette holds" is worthless as an assertion, so this measures it:
+     * capture the background, then each LOD alone, threshold each into a
+     * coverage mask, and report the symmetric difference against LOD0 as a
+     * percentage of LOD0's area. Judged at the LOD's own switch distance,
+     * which is the only distance the comparison means anything at.
+     */
+    lodSilhouette(id, { dist = null, stride = 2 } = {}) {
+      if (!g.assets) return { error: 'no asset library' };
+      const inst = g.assets.instance(id);
+      if (!inst || !inst.levels) return { error: 'asset has no LOD levels' };
+
+      const c = gl();
+      const W = c.drawingBufferWidth, H = c.drawingBufferHeight;
+      const buf = new Uint8Array(W * H * 4);
+      const grab = () => {
+        d.step(1);
+        c.readPixels(0, 0, W, H, c.RGBA, c.UNSIGNED_BYTE, buf);
+        return buf.slice();
+      };
+      const maskOf = (img, bg) => {
+        const m = new Uint8Array(Math.ceil(W / stride) * Math.ceil(H / stride));
+        let k = 0, n = 0;
+        for (let y = 0; y < H; y += stride) {
+          for (let x = 0; x < W; x += stride) {
+            const i = (y * W + x) * 4;
+            const diff = Math.abs(img[i] - bg[i]) + Math.abs(img[i+1] - bg[i+1])
+                       + Math.abs(img[i+2] - bg[i+2]);
+            m[k] = diff > 12 ? 1 : 0;
+            if (m[k]) n++;
+            k++;
+          }
+        }
+        return { m, n };
+      };
+
+      d.clearInspect();
+      // look up at open sky so the asset sits against a clean, static field
+      const savedPitch = g.player ? g.player.pitch : 0;
+      if (g.player) g.player.pitch = 0.55;
+      d.step(3);
+      const bg = grab();
+
+      const cam = g.camera;
+      const fwd = new THREE.Vector3();
+      cam.getWorldDirection(fwd);
+      g.scene.add(inst);
+      d._inspect = inst;
+
+      const out = [];
+      let ref = null;
+      for (let i = 0; i < inst.levels.length; i++) {
+        const useDist = dist ?? Math.max(0.45, inst.levels[i].distance || 0.45);
+        inst.position.copy(cam.position).addScaledVector(fwd, useDist);
+        inst.levels.forEach((l, j) => { l.object.visible = (i === j); });
+        // LOD.update() would re-pick by distance, so drive visibility by hand
+        inst.autoUpdate = false;
+        const mk = maskOf(grab(), bg);
+        if (i === 0) ref = mk;
+        let sym = 0;
+        for (let p = 0; p < mk.m.length; p++) if (mk.m[p] !== ref.m[p]) sym++;
+        out.push({
+          level: 'LOD' + i,
+          switchDist: inst.levels[i].distance,
+          measuredAt: +useDist.toFixed(2),
+          pixels: mk.n,
+          silhouetteDeltaPct: ref.n ? +(100 * sym / ref.n).toFixed(2) : null,
+        });
+      }
+      inst.levels.forEach((l) => { l.object.visible = true; });
+      inst.autoUpdate = true;
+      d.clearInspect();
+      if (g.player) g.player.pitch = savedPitch;
+      d.step(2);
+      return out;
+    },
+
+    /** Spin the inspected asset, for turntable contact sheets. */
+    turn(deg) {
+      if (!d._inspect) return { error: 'nothing inspected' };
+      d._inspect.rotation.y = deg * Math.PI / 180;
+      d.step(2);
+      return deg;
     },
 
     stats() {
