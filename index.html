@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>NOSTOS</title>
+<style>
+  :root{
+    --ink:#e8dcc4; --ink-dim:#a99b7e; --bronze:#b98b4a; --deep:#0a0e12;
+    --serif: "Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#05070a;color:var(--ink);
+    font-family:var(--serif); -webkit-font-smoothing:antialiased;}
+  canvas{display:block;position:fixed;inset:0;width:100%;height:100%;}
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:10;}
+  .layer{position:absolute;inset:0;}
+
+  /* ---------- loading ---------- */
+  #boot{position:fixed;inset:0;z-index:100;background:#05070a;display:flex;
+    align-items:center;justify-content:center;flex-direction:column;transition:opacity 1.6s ease;}
+  #boot.gone{opacity:0;pointer-events:none;}
+  #boot .title{font-size:clamp(30px,7vw,74px);letter-spacing:.42em;margin-left:.42em;
+    color:#d8c9a6;font-weight:400;text-shadow:0 0 44px rgba(190,150,80,.32);}
+  #boot .sub{margin-top:1.6em;font-size:13px;letter-spacing:.34em;color:#5d5443;}
+  #bootbar{margin-top:2.6em;width:min(300px,52vw);height:1px;background:rgba(232,220,196,.14);}
+  #bootbar i{display:block;height:100%;width:0%;background:linear-gradient(90deg,#8a6a34,#e2c58a);
+    transition:width .35s ease;box-shadow:0 0 12px rgba(226,197,138,.7);}
+  #boothint{margin-top:1.5em;font-size:11px;letter-spacing:.3em;color:#4c4638;}
+
+  /* ---------- title menu ---------- */
+  #menu{position:fixed;inset:0;z-index:60;display:none;flex-direction:column;
+    align-items:center;justify-content:center;
+    background:radial-gradient(ellipse at 50% 62%,rgba(5,7,10,.10) 0%,rgba(4,6,9,.78) 72%);}
+  #menu.on{display:flex;}
+  #menu h1{font-size:clamp(34px,8.5vw,96px);letter-spacing:.44em;margin-left:.44em;font-weight:400;
+    color:#e9dcbc;text-shadow:0 6px 60px rgba(0,0,0,.9),0 0 70px rgba(210,165,90,.22);}
+  #menu .tag{margin-top:1.1em;font-size:12px;letter-spacing:.46em;color:#9a8f77;margin-left:.46em;}
+  #menu nav{margin-top:4.2em;display:flex;flex-direction:column;gap:1.15em;align-items:center;pointer-events:auto;}
+  #menu button{background:none;border:0;color:#b9ad92;font-family:var(--serif);font-size:16px;
+    letter-spacing:.3em;margin-left:.3em;cursor:pointer;padding:.35em 1.6em;position:relative;
+    transition:color .3s, letter-spacing .3s;}
+  #menu button:hover,#menu button.sel{color:#f3e6c6;letter-spacing:.42em;}
+  #menu button:hover::before,#menu button.sel::before{content:'';position:absolute;left:0;top:50%;
+    width:.7em;height:1px;background:var(--bronze);}
+  #menu button:disabled{color:#4d4638;cursor:default;}
+  #menu .foot{position:absolute;bottom:2.4em;font-size:10.5px;letter-spacing:.26em;color:#5a5344;text-align:center;line-height:2}
+
+  /* ---------- HUD ---------- */
+  #hud{opacity:0;transition:opacity 1.2s ease;}
+  #hud.on{opacity:1;}
+  #compass{position:absolute;top:26px;left:50%;transform:translateX(-50%);
+    width:min(560px,62vw);height:30px;overflow:hidden;
+    -webkit-mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent);
+            mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent);}
+  #compass canvas{position:absolute;inset:0;width:100%;height:100%}
+  #compass-needle{position:absolute;top:0;left:50%;width:1px;height:11px;background:#e8dcc4;
+    transform:translateX(-.5px);opacity:.85}
+
+  #vitals{position:absolute;left:34px;bottom:30px;display:flex;flex-direction:column;gap:9px;
+    font-size:11px;letter-spacing:.24em;color:rgba(232,220,196,.62);text-shadow:0 1px 8px #000;}
+  #vitals .row{display:flex;align-items:baseline;gap:10px;}
+  #vitals .k{color:rgba(232,220,196,.34);min-width:5.4em;font-size:9.5px;letter-spacing:.3em}
+  #vitals .v{color:rgba(240,228,200,.92);font-size:13px;letter-spacing:.16em}
+  #crewdots{display:flex;flex-wrap:wrap;gap:3px;max-width:190px;margin-top:2px}
+  #crewdots i{width:3px;height:8px;background:rgba(226,197,138,.72);display:block;
+    transition:background .8s,opacity 1.2s}
+  #crewdots i.lost{background:rgba(120,110,95,.22)}
+
+  #wind{position:absolute;right:34px;bottom:30px;width:96px;height:96px;opacity:.75}
+
+  #prompt{position:absolute;left:50%;top:57%;transform:translateX(-50%);font-size:12.5px;
+    letter-spacing:.28em;color:rgba(240,230,206,.0);transition:color .35s;text-shadow:0 2px 12px #000;
+    white-space:nowrap;pointer-events:none;text-align:center}
+  #prompt.on{color:rgba(240,230,206,.86)}
+  #prompt em{font-style:normal;color:var(--bronze)}
+
+  #retic{position:absolute;left:50%;top:50%;width:3px;height:3px;margin:-1.5px 0 0 -1.5px;
+    border-radius:50%;background:rgba(255,245,225,.0);transition:background .3s,transform .3s}
+  #retic.on{background:rgba(255,245,225,.55);transform:scale(1.9)}
+
+  /* ---------- subtitles / narration ---------- */
+  #say{position:absolute;left:50%;bottom:16.5%;transform:translateX(-50%);width:min(760px,80vw);
+    text-align:center;font-size:clamp(15px,1.65vw,20px);line-height:1.75;color:#efe3c6;
+    text-shadow:0 2px 22px rgba(0,0,0,.95);opacity:0;transition:opacity .9s ease;letter-spacing:.02em}
+  #say.on{opacity:1}
+  #say .who{display:block;font-size:10.5px;letter-spacing:.4em;color:var(--bronze);
+    margin-bottom:.85em;text-transform:uppercase;margin-left:.4em}
+  #say .line{font-style:italic;color:#f2e8cf}
+
+  #card{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;opacity:0;transition:opacity 2.2s ease;pointer-events:none}
+  #card.on{opacity:1}
+  #card .big{font-size:clamp(22px,4.2vw,46px);letter-spacing:.34em;margin-left:.34em;color:#ecdfbe;
+    text-shadow:0 4px 40px #000}
+  #card .small{margin-top:1.5em;font-size:11.5px;letter-spacing:.4em;color:#9d937d}
+
+  /* ---------- choice ---------- */
+  #choice{position:absolute;left:50%;bottom:15%;transform:translateX(-50%);display:none;
+    flex-direction:column;gap:1.05em;align-items:center;pointer-events:auto;width:min(720px,86vw)}
+  #choice.on{display:flex}
+  #choice .opt{background:none;border:0;border-top:1px solid rgba(185,139,74,.16);
+    color:rgba(226,214,188,.72);font-family:var(--serif);font-size:15px;letter-spacing:.08em;
+    padding:.95em 1.6em;cursor:pointer;transition:color .25s,background .25s,letter-spacing .25s;
+    width:100%;text-align:center;font-style:italic}
+  #choice .opt:hover{color:#fff3d8;background:rgba(185,139,74,.07);letter-spacing:.13em}
+
+  /* ---------- fade / vignette overlays ---------- */
+  #fade{position:fixed;inset:0;background:#000;z-index:50;pointer-events:none;opacity:1;
+    transition:opacity 2s ease}
+  #flash{position:fixed;inset:0;background:#fff;z-index:49;pointer-events:none;opacity:0}
+  #damp{position:fixed;inset:0;z-index:48;pointer-events:none;opacity:0;transition:opacity .6s;
+    background:radial-gradient(ellipse at 50% 50%,transparent 32%,rgba(4,8,14,.86) 100%)}
+
+  #pause{position:fixed;inset:0;z-index:70;display:none;align-items:center;justify-content:center;
+    flex-direction:column;background:rgba(4,6,9,.72);backdrop-filter:blur(7px)}
+  #pause.on{display:flex}
+  #pause h2{font-size:15px;letter-spacing:.5em;color:#c9bb9c;margin-bottom:3em;margin-left:.5em}
+  #pause nav{display:flex;flex-direction:column;gap:1.1em;align-items:center;pointer-events:auto}
+  #pause button{background:none;border:0;color:#a99b7e;font-family:var(--serif);font-size:14px;
+    letter-spacing:.3em;cursor:pointer;transition:color .25s}
+  #pause button:hover{color:#f2e6c8}
+  #log{margin-top:3.4em;max-width:min(620px,84vw);font-size:12px;line-height:2.1;
+    color:rgba(200,188,162,.5);text-align:center;font-style:italic}
+</style>
+</head>
+<body>
+<div id="boot">
+  <div class="title">NOSTOS</div>
+  <div class="sub">THE RETURN</div>
+  <div id="bootbar"><i></i></div>
+  <div id="boothint">forging the sea</div>
+</div>
+
+<div id="menu">
+  <h1>NOSTOS</h1>
+  <div class="tag">A VOYAGE OF ODYSSEUS</div>
+  <nav>
+    <button data-act="new">BEGIN THE VOYAGE</button>
+    <button data-act="continue">CONTINUE</button>
+    <button data-act="settings">THE SHIP'S TRIM</button>
+  </nav>
+  <div class="foot">
+    W A S D &nbsp; MOVE &nbsp;·&nbsp; MOUSE &nbsp; LOOK &nbsp;·&nbsp; E &nbsp; ACT &nbsp;·&nbsp; SHIFT &nbsp; HASTEN<br>
+    Q / R &nbsp; TRIM THE YARD &nbsp;·&nbsp; F &nbsp; SET OR FURL SAIL &nbsp;·&nbsp; C &nbsp; CALL THE STROKE &nbsp;·&nbsp; TAB &nbsp; THE STARS
+  </div>
+</div>
+
+<div id="ui">
+  <div id="hud" class="layer">
+    <div id="compass"><canvas></canvas><div id="compass-needle"></div></div>
+    <div id="vitals">
+      <div class="row"><span class="k">MEN</span><span class="v" id="v-crew">—</span></div>
+      <div id="crewdots"></div>
+      <div class="row"><span class="k">BEARING</span><span class="v" id="v-bear">—</span></div>
+      <div class="row"><span class="k">ITHACA</span><span class="v" id="v-dist">—</span></div>
+    </div>
+    <canvas id="wind" width="192" height="192"></canvas>
+    <div id="retic"></div>
+    <div id="prompt"></div>
+  </div>
+  <div id="say"><span class="who"></span><span class="line"></span></div>
+  <div id="card"><div class="big"></div><div class="small"></div></div>
+  <div id="choice"></div>
+</div>
+
+<div id="damp"></div>
+<div id="flash"></div>
+<div id="fade"></div>
+
+<div id="pause">
+  <h2>BECALMED</h2>
+  <nav>
+    <button data-act="resume">RETURN TO THE DECK</button>
+    <button data-act="title">ABANDON THE VOYAGE</button>
+  </nav>
+  <div id="log"></div>
+</div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
