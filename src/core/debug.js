@@ -76,6 +76,31 @@ export function attachDebug(game) {
       };
     },
 
+    /**
+     * Render a frame and ship it to the local capture sink as a PNG.
+     * Independent of the compositor, so it works with the tab backgrounded.
+     */
+    async capture(name = 'frame', scale = 1) {
+      d.step(1);
+      const src = g.renderer.domElement;
+      let dataUrl;
+      if (scale === 1) {
+        dataUrl = src.toDataURL('image/png');
+      } else {
+        const c = document.createElement('canvas');
+        c.width = Math.round(src.width * scale);
+        c.height = Math.round(src.height * scale);
+        c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+        dataUrl = c.toDataURL('image/png');
+      }
+      const r = await fetch('http://127.0.0.1:5274/shot', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, dataUrl }),
+      });
+      return r.ok ? await r.text() : 'capture failed: ' + r.status;
+    },
+
     stats() {
       return {
         fps: +g.engine.fps.toFixed(1),

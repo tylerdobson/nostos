@@ -8,6 +8,7 @@ import { PostChain } from './render/post.js';
 import { Sky } from './render/sky.js';
 import { Ocean } from './render/ocean.js';
 import { attachDebug } from './core/debug.js';
+import { buildShip, updateShip } from './world/ship.js';
 
 const boot = document.getElementById('boot');
 const bootBar = document.querySelector('#bootbar i');
@@ -41,6 +42,10 @@ class Game {
       this.camera.updateProjectionMatrix();
       this.post.setSize(Math.floor(w * pr), Math.floor(h * pr));
     };
+    // The engine sized itself during construction, before this callback
+    // existed, so drive it once by hand — otherwise the post targets sit at
+    // their 2×2 default and every frame comes out as a smear.
+    this.engine.applyResize();
 
     // --- world time: the voyage runs on its own clock -------------------
     this.timeOfDay = 8.2;      // hours
@@ -64,7 +69,7 @@ class Game {
 
   async build() {
     await progress(0.06, 'kindling the sun');
-    this.sky = new Sky(this.renderer, { year: -1200, latitude: 37.5, quality: this.quality });
+    this.sky = new Sky(this.renderer, { year: -700, latitude: 37.5, quality: this.quality });
     this.sky.addTo(this.scene);
     this.sky.setTime(this.timeOfDay, this.dayOfYear);
 
@@ -73,6 +78,14 @@ class Game {
     this.ocean.setWind(7.5, 0.6);
     this.ocean.setSeaState(0.42);
     this.scene.add(this.ocean.mesh);
+
+    await progress(0.58, 'laying the keel');
+    this.ship = buildShip(this.quality);
+    this.scene.add(this.ship);
+    this.shipState = {
+      yardAngle: 0.35, sailBelly: 0.62, brail: 0.0,
+      oarPhase: 0, oarsOut: 0, rudder: 0,
+    };
 
     await progress(0.70, 'raising the horizon');
     // fully populate the sky cube and its IBL before the first frame so
@@ -128,6 +141,56 @@ class Game {
       this.camera.position.y);
   }
 
+  /**
+   * Sit the hull on the water. Sampling the analytic wave field at four points
+   * around the hull and fitting a plane gives heave, pitch and roll for free,
+   * and because the same function runs on the GPU the ship never floats above
+   * or sinks into the surface it is standing on.
+   */
+  _floatShip(dt) {
+    const sh = this.ship;
+    if (!sh) return;
+    const o = this.ocean;
+    const p = sh.position;
+    const yaw = sh.rotation.y;
+    const cos = Math.cos(yaw), sin = Math.sin(yaw);
+    const local = (lz, lx) => [p.x + lz * sin + lx * cos, p.z + lz * cos - lx * sin];
+
+    const LZ = 13.0, LX = 1.85;   // sampling points fore/aft and port/starboard
+    const [bx, bz] = local(LZ, 0);
+    const [sx, sz] = local(-LZ, 0);
+    const [px, pz] = local(0, -LX);
+    const [tx, tz] = local(0, LX);
+
+    const hb = o.heightAt(bx, bz), hs = o.heightAt(sx, sz);
+    const hp = o.heightAt(px, pz), ht = o.heightAt(tx, tz);
+
+    const targetY = (hb + hs + hp + ht) * 0.25;
+    // A 31 m hull bridges most wave systems, so it pitches far less than the
+    // local slope would suggest — dividing by more than the true span is the
+    // cheapest way to express that stiffness.
+    const targetPitch = Math.atan2(hb - hs, LZ * 2.4);
+    const targetRoll = Math.atan2(ht - hp, LX * 2.2);
+
+    // The hull has mass: it lags the surface rather than snapping to it, and
+    // that lag is most of what makes a ship feel heavy.
+    const k = 1 - Math.exp(-dt * 2.6);
+    const kr = 1 - Math.exp(-dt * 1.9);
+    p.y += (targetY - p.y) * k;
+    sh.rotation.x += (targetPitch - sh.rotation.x) * kr;
+    sh.rotation.z += (-targetRoll - sh.rotation.z) * kr;
+
+    updateShip(sh, dt, {
+      ...this.shipState,
+      sunDir: this.sky.sunDir,
+      sunColor: this.sky.sunLight.color,
+      sunIntensity: Math.max(0.02, this.sky.uniforms.uSunIntensity.value),
+      ambient: this.sky.hemi.color.clone().multiplyScalar(this.sky.hemi.intensity * 0.55),
+      eye: this.camera.position,
+    });
+    this.shipState.oarPhase += dt * 1.9;
+  }
+
   tick(dt, elapsed) {
     // --- advance the world clock
     this.timeOfDay += (dt * this.timeScale) / 3600;
@@ -139,6 +202,7 @@ class Game {
 
     this.sky.update(dt, this.camera, this.camera.position);
     this.ocean.update(dt, this.camera, this.sky);
+    this._floatShip(dt);
 
     // two cube faces per frame keeps the scattering cost flat and invisible
     this.sky.renderSky(this.renderer, 2);

@@ -90,23 +90,43 @@ function ramp(stops, t) {
   return stops[stops.length - 1][1];
 }
 
-/** Build an RGB canvas from a per-pixel callback returning [r,g,b] in 0..1. */
-function rgbCanvas(size, fn) {
+/** Linear → sRGB transfer function. */
+function encodeSRGB(v) {
+  v = v <= 0 ? 0 : v >= 1 ? 1 : v;
+  return v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+}
+
+/**
+ * Build an RGB canvas from a per-pixel callback returning [r,g,b] in 0..1.
+ * Palette values throughout this file are authored in LINEAR light, so any
+ * canvas destined to be tagged sRGB must be encoded on the way out — skipping
+ * that step darkens every albedo in the game by roughly a factor of five.
+ */
+function rgbCanvas(size, fn, srgb = false) {
   const c = canvas(size), ctx = c.getContext('2d');
   const img = ctx.createImageData(size, size);
   const d = img.data;
   for (let y = 0, p = 0; y < size; y++) {
     for (let x = 0; x < size; x++, p += 4) {
       const col = fn(x, y, x / size, y / size);
-      d[p] = Math.max(0, Math.min(255, col[0] * 255));
-      d[p + 1] = Math.max(0, Math.min(255, col[1] * 255));
-      d[p + 2] = Math.max(0, Math.min(255, col[2] * 255));
+      if (srgb) {
+        d[p] = encodeSRGB(col[0]) * 255;
+        d[p + 1] = encodeSRGB(col[1]) * 255;
+        d[p + 2] = encodeSRGB(col[2]) * 255;
+      } else {
+        d[p] = Math.max(0, Math.min(255, col[0] * 255));
+        d[p + 1] = Math.max(0, Math.min(255, col[1] * 255));
+        d[p + 2] = Math.max(0, Math.min(255, col[2] * 255));
+      }
       d[p + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
   return c;
 }
+
+/** Albedo canvases are always linear-authored and sRGB-encoded. */
+const albedoCanvas = (size, fn) => rgbCanvas(size, fn, true);
 
 // tiling noise: sample simplex on a torus so the texture wraps seamlessly
 function tileNoise(u, v, freq, oct = 4, seedOff = 0) {
@@ -218,7 +238,7 @@ export function woodMaterial(variant = 'deck', size = 1024) {
     };
     const pal = palettes[variant] || palettes.deck;
 
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x;
       const t = Math.max(0, Math.min(1, G[i] * 0.55 + W[i] * 0.55 - 0.12));
       const c = ramp(pal, t);
@@ -240,7 +260,7 @@ export function woodMaterial(variant = 'deck', size = 1024) {
       map: texFromCanvas(albedo, { srgb: true }),
       normalMap: texFromCanvas(normalFromHeight(H, size, variant === 'deck' ? 2.6 : 2.0)),
       roughnessMap: texFromCanvas(fieldToCanvas(rough, size)),
-      aoMap: texFromCanvas(fieldToCanvas(H.map ? H : H, size)),
+      aoMap: texFromCanvas(fieldToCanvas(H, size)),
     };
   });
 }
@@ -275,7 +295,7 @@ export function bronzeMaterial(patina = 0.35, size = 512) {
     const metalC = [0.72, 0.50, 0.24];      // polished bronze, linear
     const tarnC = [0.26, 0.175, 0.085];     // brown-black tarnish
     const verdC = [0.24, 0.42, 0.32];       // verdigris
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x, p = P[i];
       const t = Math.min(1, p * 1.6);
       const g = Math.max(0, (p - 0.55) * 2.2);
@@ -340,7 +360,7 @@ export function linenMaterial(size = 1024, coarse = 1.0) {
       }
     }
 
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x;
       const lit = H[i];
       // unbleached flax: warm oat, going grey-brown with salt and use
@@ -387,7 +407,7 @@ export function ropeMaterial(size = 512) {
         H[i] = h * 0.5 + 0.5;
       }
     }
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x, l = H[i];
       const base = [0.46, 0.375, 0.235];
       const k = 0.55 + l * 0.62;
@@ -428,7 +448,7 @@ export function stoneMaterial(size = 1024, variant = 'limestone') {
       ? [[0, [0.055, 0.052, 0.050]], [0.5, [0.135, 0.128, 0.120]], [1, [0.24, 0.23, 0.215]]]
       : [[0, [0.20, 0.185, 0.155]], [0.45, [0.46, 0.435, 0.375]],
          [0.8, [0.66, 0.635, 0.555]], [1, [0.79, 0.775, 0.70]]];
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x;
       const c = ramp(pal, H[i] * 0.75 + M[i] * 0.3);
       // rust staining and lichen
@@ -463,7 +483,7 @@ export function sandMaterial(size = 1024) {
         H[i] = 0.45 + grain * 0.16 + ripple * 0.14 + pebble * 0.5;
       }
     }
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x, h = H[i];
       const c = ramp([[0, [0.42, 0.375, 0.315]], [0.5, [0.66, 0.605, 0.505]],
                       [0.85, [0.79, 0.745, 0.645]], [1, [0.60, 0.585, 0.565]]], h);
@@ -494,7 +514,7 @@ export function terracottaMaterial(size = 512, painted = false) {
         H[i] = 0.6 + rings * 0.10 + grit * 0.10 - chips * 0.4;
       }
     }
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x;
       const c = ramp([[0, [0.26, 0.135, 0.085]], [0.5, [0.50, 0.265, 0.165]],
                       [1, [0.63, 0.375, 0.245]]], H[i]);
@@ -534,7 +554,7 @@ export function skinMaterial(tone = 0.5, size = 512) {
     }
     const light = [0.60, 0.415, 0.315];
     const dark = [0.335, 0.205, 0.145];
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x;
       const t = Math.max(0, Math.min(1, tone + torus(x / size, y / size, 5, 4, 88) * 0.16));
       const c = [
@@ -567,7 +587,7 @@ export function woolMaterial(color = [0.38, 0.33, 0.28], size = 512) {
         H[i] = nap * 0.6 + weave * 0.25 + torus(u, v, 8, 4, 5) * 0.15;
       }
     }
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x, k = 0.7 + H[i] * 0.55;
       return [color[0] * k, color[1] * k, color[2] * k];
     });
@@ -671,7 +691,7 @@ export function moonTexture(size = 512) {
         H[i] = Math.max(0, Math.min(1, h));
       }
     }
-    const albedo = rgbCanvas(size, (x, y) => {
+    const albedo = albedoCanvas(size, (x, y) => {
       const h = H[y * size + x];
       return [h * 0.86, h * 0.87, h * 0.92];
     });
@@ -746,4 +766,4 @@ export const WHITE = (() => {
   return texFromCanvas(c, { srgb: true });
 })();
 
-export { texFromCanvas, normalFromHeight, rgbCanvas, fieldToCanvas, ramp };
+export { texFromCanvas, normalFromHeight, rgbCanvas, albedoCanvas, fieldToCanvas, ramp };

@@ -18,11 +18,13 @@ export class Engine {
       depth: true,
       alpha: false,
       logarithmicDepthBuffer: false,
+      // lets us pull finished frames off the canvas for verification captures
+      preserveDrawingBuffer: true,
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NoToneMapping;   // done in the post pass
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.setClearColor(0x000000, 1);
     this.renderer.info.autoReset = false;
 
@@ -56,6 +58,9 @@ export class Engine {
     this.size.set(w * pr, h * pr);
     if (this.onResize) this.onResize(w, h, pr);
   }
+
+  /** Re-run sizing, e.g. once the owner has attached its onResize callback. */
+  applyResize() { this._onResize(); }
 
   setRenderScale(s) {
     s = Math.max(0.5, Math.min(1.0, s));
