@@ -539,6 +539,9 @@ export function terracottaMaterial(size = 512, painted = false) {
 
 /** Sun-darkened Mediterranean skin with pores, scars and salt. */
 export function skinMaterial(tone = 0.5, size = 512) {
+  // Quantise: the difference between tone 0.41 and 0.43 is invisible, but
+  // synthesising a separate 512² set for each crewman is seconds of load time.
+  tone = Math.round(tone * 4) / 4;
   const key = 'skin' + tone.toFixed(2) + size;
   return memo(key, () => {
     const H = new Float32Array(size * size);
@@ -552,8 +555,8 @@ export function skinMaterial(tone = 0.5, size = 512) {
              + fine * 0.06 + folds * 0.10;
       }
     }
-    const light = [0.60, 0.415, 0.315];
-    const dark = [0.335, 0.205, 0.145];
+    const light = [0.505, 0.372, 0.296];
+    const dark = [0.285, 0.196, 0.150];
     const albedo = albedoCanvas(size, (x, y) => {
       const i = y * size + x;
       const t = Math.max(0, Math.min(1, tone + torus(x / size, y / size, 5, 4, 88) * 0.16));
@@ -577,6 +580,7 @@ export function skinMaterial(tone = 0.5, size = 512) {
 
 /** Coarse undyed wool, for cloaks and blankets. */
 export function woolMaterial(color = [0.38, 0.33, 0.28], size = 512) {
+  color = color.map((c) => Math.round(c * 8) / 8);
   return memo('wool' + color.join(',') + size, () => {
     const H = new Float32Array(size * size);
     for (let y = 0; y < size; y++) {

@@ -971,13 +971,19 @@ export class Sky {
       * Math.max(0, 1 - Math.max(0, sa) * 6);
     this.moonLight.position.copy(this.moonDir).multiplyScalar(120);
 
-    // hemisphere fill tracks the sky's own colour so nothing floats
+    // Hemisphere fill tracks the sky's own colour so nothing floats. It has to
+    // be generous: the inside of a hull is lit almost entirely by skylight
+    // coming down through the open deck, and if this is timid the whole rowing
+    // well reads as a black pit.
     const dayT = THREE.MathUtils.clamp(sa * 3.0, 0, 1);
     this.hemi.color.setRGB(
-      0.28 + dayT * 0.34, 0.36 + dayT * 0.38, 0.52 + dayT * 0.40
+      0.30 + dayT * 0.36, 0.38 + dayT * 0.40, 0.54 + dayT * 0.42
     );
-    this.hemi.groundColor.setRGB(0.10 + dayT * 0.10, 0.09 + dayT * 0.08, 0.07 + dayT * 0.06);
-    this.hemi.intensity = 0.14 + dayT * 0.62 + this.moonLight.intensity * 0.5;
+    // the ground half is the sea, so it bounces blue-green up under the ship
+    this.hemi.groundColor.setRGB(
+      0.06 + dayT * 0.10, 0.11 + dayT * 0.16, 0.14 + dayT * 0.20
+    );
+    this.hemi.intensity = 0.35 + dayT * 2.10 + this.moonLight.intensity * 0.8;
 
     this._envDirty = true;
   }

@@ -774,6 +774,52 @@ export function buildShip(quality = 'high') {
   root.userData.beamAt = beamAt;
   root.userData.sheerAt = sheerAt;
   root.userData.keelAt = keelAt;
+  root.userData.oarPositions = oarPositions;
+
+  // --- where a man can actually stand ------------------------------------
+  // A penteconter is almost all rowing bench. There is a raised deck at each
+  // end and a narrow catwalk between them, and that is the whole of it.
+  const HALF = SHIP.halfLen;
+  root.userData.walk = {
+    DECK_Y,
+    gangwayHalfWidth: 0.50,
+    gangwayY: DECK_Y + 0.505,
+    foreZ: [11.3, 14.5],
+    aftZ: [-14.5, -11.3],
+    gangZ: [-11.5, 11.4],
+    // the forward hold: a low space under the fore deck where the water jars,
+    // the anchor stones and the spare cordage live. You go in bent double.
+    holdZ: [10.4, 14.3],
+    holdY: -0.46,
+    hatchZ: 11.0,
+  };
+
+  /**
+   * Height of the walkable surface at a ship-local point, or null if there is
+   * nothing to stand on there.
+   */
+  root.userData.deckHeightAt = function (x, z, below) {
+    const w = root.userData.walk;
+    const u = z / HALF;
+    if (below) {
+      if (z > w.holdZ[0] && z < w.holdZ[1] && Math.abs(x) < beamAt(u) - 0.32) {
+        return w.holdY;
+      }
+      return null;
+    }
+    if (z >= w.foreZ[0] && z <= w.foreZ[1]) {
+      if (Math.abs(x) > beamAt(u) - 0.14) return null;
+      return DECK_Y + 0.55 + Math.pow(u, 4) * 0.55;
+    }
+    if (z <= w.aftZ[1] && z >= w.aftZ[0]) {
+      if (Math.abs(x) > beamAt(u) - 0.14) return null;
+      return DECK_Y + 0.62 + Math.pow(-u, 4) * 0.70;
+    }
+    if (z > w.gangZ[0] && z < w.gangZ[1] && Math.abs(x) <= w.gangwayHalfWidth) {
+      return w.gangwayY;
+    }
+    return null;
+  };
 
   return root;
 }
