@@ -91,8 +91,8 @@ export class Player {
 
     // The deck is not a floor you glide over: a man on a rolling ship is
     // always half-falling, so acceleration is soft and the roll pushes him.
-    const roll = this.ship.rotation.z;
-    const pitchS = this.ship.rotation.x;
+    const roll = this.groundFn ? 0 : this.ship.rotation.z;
+    const pitchS = this.groundFn ? 0 : this.ship.rotation.x;
     const slideX = Math.sin(roll) * 3.4;
     const slideZ = -Math.sin(pitchS) * 3.4;
 
@@ -103,11 +103,12 @@ export class Player {
     this.vel.z *= Math.exp(-dt * 1.4);
 
     // --- collide against the walkable surface ------------------------------
+    // Ashore, the surface is the island heightfield and there is nothing to
+    // fall off; aboard, it is the narrow catwalk and the two raised decks.
     const stepX = this.vel.x * dt, stepZ = this.vel.z * dt;
-    const tryMove = (nx, nz) => {
-      const h = ud.deckHeightAt(nx, nz, this.below);
-      return h === null ? null : h;
-    };
+    const tryMove = this.groundFn
+      ? (nx, nz) => this.groundFn(nx, nz)
+      : (nx, nz) => ud.deckHeightAt(nx, nz, this.below);
 
     let nx = this.local.x + stepX, nz = this.local.z + stepZ;
     let h = tryMove(nx, nz);
@@ -138,12 +139,22 @@ export class Player {
     this.eye = THREE.MathUtils.lerp(EYE_STAND, EYE_CROUCH, this.crouch);
 
     // --- build the camera transform ---------------------------------------
-    this.ship.updateMatrixWorld();
     const local = new THREE.Vector3(
       this.local.x + bobX * 0.4,
       this.local.y + this.eye + bobY,
       this.local.z
     );
+    if (this.groundFn) {
+      // ashore: local coordinates are already world coordinates, and the
+      // ground does not move under you
+      this._worldPos.copy(local);
+      this.camera.position.copy(this._worldPos);
+      this._lookQ.setFromEuler(new THREE.Euler(this.pitch, this.yaw, this.sway, 'YXZ'));
+      this.camera.quaternion.copy(this._lookQ);
+      return;
+    }
+
+    this.ship.updateMatrixWorld();
     this._worldPos.copy(local).applyMatrix4(this.ship.matrixWorld);
     this.camera.position.copy(this._worldPos);
 

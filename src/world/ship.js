@@ -725,15 +725,19 @@ export function buildShip(quality = 'high') {
   // ==========================================================================
 
   {
+    // Alpha-tested rather than blended: a blended decal has to be sorted
+    // against the hull it sits on, and it loses that argument at some angles
+    // and paints itself through the bow.
     const eyeMat = new THREE.MeshStandardMaterial({
       map: prowEyeTexture(512),
-      transparent: true,
-      roughness: 0.86,
+      transparent: false,
+      alphaTest: 0.42,
+      roughness: 0.88,
       metalness: 0.0,
-      depthWrite: false,
+      side: THREE.FrontSide,
       polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
     });
     for (const side of [1, -1]) {
       const u = 0.80;
@@ -749,7 +753,6 @@ export function buildShip(quality = 'high') {
       const b = beamAt(u);
       m.position.set(side * (b + 0.045), sheerAt(u) - 0.62, u * SHIP.halfLen + 0.5);
       m.rotation.y = side > 0 ? Math.PI / 2 - 0.30 : -Math.PI / 2 + 0.30;
-      m.renderOrder = 3;
       root.add(m);
     }
   }
