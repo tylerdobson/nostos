@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // sky.js — atmosphere, sun, moon, clouds and an astronomically-placed star
 // field. The player is expected to steer by the stars, so the catalogue is
-// real and precessed back to roughly 1200 BC.
+// real and precessed back to the era of the voyage (c. 700 BC), which is far
+// enough back that the pole star is Kochab rather than Polaris.
 // ---------------------------------------------------------------------------
 
 import * as THREE from 'three';
@@ -50,7 +51,7 @@ const STARS = [
   ['Merak',          11.0307,  56.3824,  2.37,  0.03],
   ['Phecda',         11.8972,  53.6948,  2.44,  0.04],
   ['Megrez',         12.2571,  57.0326,  3.31,  0.08],
-  ['Polaris',         2.5303,  89.2641,  1.98,  0.60],  // near-pole today; NOT in 1200 BC
+  ['Polaris',         2.5303,  89.2641,  1.98,  0.60],  // near-pole today; not yet in 700 BC
   ['Kochab',         14.8451,  74.1555,  2.08,  1.47],  // Ursa Minor — the pole star of the era
   ['Pherkad',        15.3455,  71.8340,  3.00,  0.06],
   ['Thuban',         14.0731,  64.3758,  3.65, -0.05],  // Draco — pole star ~2700 BC
@@ -672,7 +673,10 @@ export class Sky {
     quadMesh.frustumCulled = false;
     this.bakeScene.add(quadMesh);
 
-    this.stripCount = 6;
+    // More, thinner strips: the scattering integral is the single most
+    // expensive thing per pixel in the game, so it is spread across twelve
+    // frames rather than six. A full refresh still lands inside 200 ms.
+    this.stripCount = 12;
     this._strip = 0;
     this._stripsLeft = this.stripCount;
 
@@ -1023,7 +1027,7 @@ export class Sky {
       this._stripsLeft = Math.max(this._stripsLeft, this.stripCount);
     }
     this._cloudAccum = (this._cloudAccum || 0) + dt;
-    if (this._cloudAccum > 0.20) {
+    if (this._cloudAccum > 0.35) {
       this._cloudAccum = 0;
       this._stripsLeft = Math.max(this._stripsLeft, this.stripCount);
     }

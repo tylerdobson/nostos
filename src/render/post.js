@@ -76,11 +76,11 @@ const GODRAY_FRAG = /* glsl */`
   uniform float uOnScreen;
   void main(){
     if(uStrength <= 0.001 || uOnScreen < 0.5){ gl_FragColor = vec4(0.0); return; }
-    vec2 delta = (vUv - uSunUV) * (uDensity / 24.0);
+    vec2 delta = (vUv - uSunUV) * (uDensity / 16.0);
     vec2 uv = vUv;
     float illum = 1.0;
     vec3 sum = vec3(0.0);
-    for(int i = 0; i < 24; i++){
+    for(int i = 0; i < 16; i++){
       uv -= delta;
       vec3 s = texture2D(tBright, uv).rgb;
       sum += s * illum * uWeight;
@@ -89,7 +89,7 @@ const GODRAY_FRAG = /* glsl */`
     // fade out as the sun approaches the screen edge so it never pops
     vec2 d = abs(uSunUV - 0.5) * 2.0;
     float edge = 1.0 - smoothstep(0.55, 1.15, max(d.x, d.y));
-    gl_FragColor = vec4(sum * uStrength * edge / 24.0, 1.0);
+    gl_FragColor = vec4(sum * uStrength * edge / 16.0, 1.0);
   }
 `;
 
@@ -245,6 +245,10 @@ export class PostChain {
   constructor(renderer, quality = 'high') {
     this.renderer = renderer;
     this.quality = quality;
+    // The bloom pyramid is the most expensive thing in the chain after the
+    // composite. Two octaves on weaker hardware is visually very close to
+    // three and costs a third less.
+    this.bloomOctaves = quality === 'high' ? 3 : 2;
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
@@ -349,9 +353,9 @@ export class PostChain {
     this.mBright.uniforms.uTexel.value.set(1 / this.width, 1 / this.height);
     this._blit(this.mBright, this.bright);
 
-    // --- three bloom octaves
+    // --- bloom octaves
     let src = this.bright.texture;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < this.bloomOctaves; i++) {
       const w = this.blurA[i].width, h = this.blurA[i].height;
       this.mBlur.uniforms.tDiffuse.value = src;
       this.mBlur.uniforms.uDir.value.set(1 / w, 0);
@@ -362,16 +366,28 @@ export class PostChain {
       src = this.blurA[i].texture;
     }
 
-    // --- god rays marched through the bright buffer
-    this.mRays.uniforms.tBright.value = this.blurA[0].texture;
-    this._blit(this.mRays, this.rays);
+    // --- god rays, but only when there is a sun on screen to shaft from.
+    // Marching sixteen taps over a half-res buffer to produce black is the
+    // easiest millisecond in the whole frame to give back.
+    const rayU = this.mRays.uniforms;
+    const raysOn = rayU.uStrength.value > 0.008 && rayU.uOnScreen.value > 0.5;
+    if (raysOn) {
+      rayU.tBright.value = this.blurA[0].texture;
+      this._blit(this.mRays, this.rays);
+    } else if (!this._raysCleared) {
+      rayU.tBright.value = this.blurA[0].texture;
+      const s0 = rayU.uStrength.value; rayU.uStrength.value = 0;
+      this._blit(this.mRays, this.rays);
+      rayU.uStrength.value = s0;
+    }
+    this._raysCleared = !raysOn;
 
     // --- composite + tone map
     const c = this.mComposite.uniforms;
     c.tDiffuse.value = this.sceneRT.texture;
     c.tBloom.value = this.blurA[0].texture;
-    c.tBloom2.value = this.blurA[1].texture;
-    c.tBloom3.value = this.blurA[2].texture;
+    c.tBloom2.value = this.blurA[Math.min(1, this.bloomOctaves - 1)].texture;
+    c.tBloom3.value = this.blurA[Math.min(2, this.bloomOctaves - 1)].texture;
     c.tRays.value = this.rays.texture;
     c.uTime.value = time;
     this._blit(this.mComposite, this.ldr);

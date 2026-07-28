@@ -347,7 +347,8 @@ export class Island {
     u.uSunDir.value.copy(sky.sunDir);
     u.uSunColor.value.copy(sky.sunLight.color);
     u.uSunIntensity.value = Math.max(0.015, sky.uniforms.uSunIntensity.value);
-    u.uAmbient.value.copy(sky.hemi.color).multiplyScalar(sky.hemi.intensity * 0.45);
+    u.uAmbient.value.copy(sky.hemi.color)
+      .multiplyScalar(Math.min(0.45, sky.hemi.intensity * 0.14));
     u.uEye.value.copy(camera.position);
     u.uEnv.value = sky.envMap;
   }

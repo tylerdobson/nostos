@@ -86,8 +86,8 @@ export class Engine {
       // Adaptive resolution: hold 60 by shrinking the buffer before dropping
       // any visual feature. Only reacts every half second so it never pulses.
       if (this.adaptive && this.frame % 30 === 0 && n >= this._ft.length) {
-        if (this.fps < 52) this.setRenderScale(this.renderScale - 0.08);
-        else if (this.fps > 58.5 && this.renderScale < 1.0) this.setRenderScale(this.renderScale + 0.04);
+        if (this.fps < 55) this.setRenderScale(this.renderScale - 0.10);
+        else if (this.fps > 58.8 && this.renderScale < 1.0) this.setRenderScale(this.renderScale + 0.04);
       }
 
       this.renderer.info.reset();

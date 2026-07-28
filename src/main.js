@@ -209,6 +209,11 @@ class Game {
     document.getElementById('hud').classList.add('on');
     fade.style.opacity = '0';
     this.player.local.set(0, this.ship.userData.walk.gangwayY, -6.0);
+    // yaw 0 looks aft, because the camera's own -Z is the ship's stern; start
+    // the player facing the bow, which is the direction anyone would expect
+    // "forward" to mean on a ship
+    this.player.yaw = Math.PI;
+    this.player.pitch = -0.04;
   }
 
   // -------------------------------------------------------------------------
@@ -499,8 +504,11 @@ class Game {
 
     // --- shared visual state pushed into every custom shader
     const sunI = Math.max(0.015, this.sky.uniforms.uSunIntensity.value);
+    // three applies a hemisphere light through the full BRDF; the custom
+    // shaders (sail, rowers, terrain) use this value as a direct multiplier,
+    // so it has to be divided down or everything they touch washes out
     const ambient = this.sky.hemi.color.clone()
-      .multiplyScalar(this.sky.hemi.intensity * 0.55);
+      .multiplyScalar(Math.min(0.55, this.sky.hemi.intensity * 0.17));
 
     updateShip(this.ship, dt, {
       yardAngle: this.vessel.yardAngle,
@@ -538,7 +546,7 @@ class Game {
     this.world.update(this.vessel.pos.x, this.vessel.pos.y, this.sky, this.camera);
     this.sky.update(dt, this.camera, this.ship.position);
     this.ocean.update(dt, this.camera, this.sky);
-    this.sky.renderSky(this.renderer, 2);
+    this.sky.renderSky(this.renderer, 1);
     if (this.engine.frame % 24 === 0) this.sky.updateEnvironment(this.renderer, this.scene);
 
     // --- exposure follows the sun; this is what makes dusk feel like dusk

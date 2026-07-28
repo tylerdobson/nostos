@@ -431,7 +431,10 @@ export class RowerBank {
 
     this.mesh = new THREE.InstancedMesh(geo, this.material, this.count);
     this.mesh.frustumCulled = false;
-    this.mesh.castShadow = true;
+    // The bank sits inside the hull, where its own shadows are almost entirely
+    // hidden by the gunwale. Casting them costs a second full pass over fifty
+    // figures for something nobody can see.
+    this.mesh.castShadow = false;
 
     const r = rng(4242);
     const phase = new Float32Array(this.count);
