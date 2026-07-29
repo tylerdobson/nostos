@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>NOSTOS audio self-test</title>
+  <style>
+    body { background:#12100e; color:#d8cfc0; font:13px/1.5 ui-monospace,Consolas,monospace; padding:18px; }
+    h1 { font-size:15px; letter-spacing:.14em; text-transform:uppercase; color:#c9a227; }
+    table { border-collapse:collapse; margin:12px 0; width:100%; }
+    td,th { border-bottom:1px solid #2c2621; padding:4px 10px 4px 0; text-align:left; vertical-align:top; }
+    .PASS { color:#7fb069; font-weight:700; }
+    .FAIL { color:#c4553a; font-weight:700; }
+    pre { white-space:pre-wrap; color:#8d8578; }
+    button { background:#2c2621; color:#d8cfc0; border:1px solid #4a4038; padding:6px 14px; font:inherit; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <h1>NOSTOS audio self-test</h1>
+  <p>
+    <button id="run">run offline suite</button>
+    <button id="live">start live audio (needs this click)</button>
+    <span id="status"></span>
+  </p>
+  <div id="table"></div>
+  <pre id="detail"></pre>
+
+  <script type="module">
+    // This page deliberately imports nothing but the audio modules, so that
+    // another agent editing main.js cannot make Vite reload the render
+    // half way through a twenty-second offline measurement.
+    import { runSelfTest, render, makeSim } from './selftest.js';
+    import { AudioEngine } from './audio.js';
+
+    const $ = (id) => document.getElementById(id);
+    window.__audioTest = { runSelfTest, render, makeSim, AudioEngine };
+
+    function show(res) {
+      const rows = res.rows.map((r) =>
+        `<tr><td class="${r.result}">${r.result}</td><td>${r.test}</td><td>${r.measured}</td><td>${r.expected}</td></tr>`).join('');
+      $('table').innerHTML = `<table><tr><th></th><th>test</th><th>measured</th><th>expected</th></tr>${rows}</table>`;
+      $('detail').textContent = JSON.stringify(res.detail, null, 1);
+    }
+
+    $('run').onclick = async () => {
+      $('status').textContent = ' rendering…';
+      const t0 = performance.now();
+      try {
+        const res = await runSelfTest({ log: true });
+        window.__result = res;
+        show(res);
+        $('status').textContent = ` ${res.pass ? 'ALL PASS' : 'FAILURES'} · ${Math.round(performance.now() - t0)} ms`;
+      } catch (e) {
+        window.__error = e;
+        $('status').textContent = ' ERROR: ' + e.message;
+        $('detail').textContent = e.stack;
+      }
+    };
+
+    // Live playback needs a real user gesture. This button is the gesture.
+    $('live').onclick = async () => {
+      const eng = new AudioEngine();
+      await eng.init();
+      window.__live = eng;
+      const sim = makeSim({ hs: 1.8, wind: 10, speed: 2.8, oarsOut: 1, oarEffort: 0.85 });
+      let last = performance.now();
+      const costs = [];
+      (function loop() {
+        const now = performance.now();
+        const dt = Math.min(0.05, (now - last) / 1000);
+        last = now;
+        sim.step(dt, eng.ctx.currentTime);
+        const t0 = performance.now();
+        eng.update(dt, sim);
+        costs.push(performance.now() - t0);
+        if (costs.length > 600) costs.shift();
+        window.__liveCost = costs;
+        requestAnimationFrame(loop);
+      })();
+      $('status').textContent = ' live: ctx.state=' + eng.ctx.state + ' rate=' + eng.ctx.sampleRate;
+    };
+  </script>
+</body>
+</html>
