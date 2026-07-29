@@ -37,8 +37,12 @@
     color:#e9dcbc;text-shadow:0 6px 60px rgba(0,0,0,.9),0 0 70px rgba(210,165,90,.22);}
   #menu .tag{margin-top:1.1em;font-size:12px;letter-spacing:.46em;color:#9a8f77;margin-left:.46em;}
   #menu nav{margin-top:4.2em;display:flex;flex-direction:column;gap:1.15em;align-items:center;pointer-events:auto;}
+  /* the sea behind the title can be a bright moonlit sheet, so the words carry
+     the same shadow the HUD uses rather than trusting the scrim */
+  #menu .tag,#menu .foot{text-shadow:0 2px 14px rgba(0,0,0,.95);}
   #menu button{background:none;border:0;color:#b9ad92;font-family:var(--serif);font-size:16px;
     letter-spacing:.3em;margin-left:.3em;cursor:pointer;padding:.35em 1.6em;position:relative;
+    text-shadow:0 2px 16px rgba(0,0,0,.95),0 0 34px rgba(0,0,0,.8);
     transition:color .3s, letter-spacing .3s;}
   #menu button:hover,#menu button.sel{color:#f3e6c6;letter-spacing:.42em;}
   #menu button:hover::before,#menu button.sel::before{content:'';position:absolute;left:0;top:50%;
@@ -113,15 +117,71 @@
     background:radial-gradient(ellipse at 50% 50%,transparent 32%,rgba(4,8,14,.86) 100%)}
 
   #pause{position:fixed;inset:0;z-index:70;display:none;align-items:center;justify-content:center;
-    flex-direction:column;background:rgba(4,6,9,.72);backdrop-filter:blur(7px)}
+    flex-direction:column;background:rgba(4,6,9,.72);backdrop-filter:blur(7px);
+    opacity:0;transition:opacity .55s ease}
   #pause.on{display:flex}
+  #pause.vis{opacity:1}
   #pause h2{font-size:15px;letter-spacing:.5em;color:#c9bb9c;margin-bottom:3em;margin-left:.5em}
   #pause nav{display:flex;flex-direction:column;gap:1.1em;align-items:center;pointer-events:auto}
   #pause button{background:none;border:0;color:#a99b7e;font-family:var(--serif);font-size:14px;
     letter-spacing:.3em;cursor:pointer;transition:color .25s}
   #pause button:hover{color:#f2e6c8}
+  #pause button:disabled{color:#433d31;cursor:default}
+  #pausenote{margin-top:3.6em;font-size:9.5px;letter-spacing:.36em;margin-left:.36em;
+    color:rgba(185,139,74,0);transition:color .8s ease;height:1em}
+  #pausenote.on{color:rgba(185,139,74,.78)}
   #log{margin-top:3.4em;max-width:min(620px,84vw);font-size:12px;line-height:2.1;
     color:rgba(200,188,162,.5);text-align:center;font-style:italic}
+  #log .head{display:block;font-style:normal;font-size:9.5px;letter-spacing:.34em;
+    margin-left:.34em;color:rgba(232,220,196,.30);margin-bottom:1.4em}
+
+  /* ---------- the ship's trim ---------- */
+  /* Same grammar as the title screen: a serif column, thin bronze rules, no
+     boxes. A continuous value is a rule with a bronze mark standing on it —
+     there is not a rounded rectangle anywhere in here. */
+  #trim{position:fixed;inset:0;z-index:80;display:none;flex-direction:column;
+    align-items:center;justify-content:center;background:rgba(4,6,9,.93);
+    opacity:0;transition:opacity .7s ease}
+  #trim.on{display:flex}
+  #trim.vis{opacity:1}
+  #trim h2{font-size:15px;letter-spacing:.5em;margin-left:.5em;color:#c9bb9c;margin-bottom:3.2em}
+  #trim .rows{width:min(600px,86vw);pointer-events:auto}
+  #trim .row{display:grid;grid-template-columns:11.6em 1fr 4.4em;align-items:center;
+    gap:1.5em;padding:.95em 0;border-top:1px solid rgba(185,139,74,.13)}
+  #trim .row:first-child{border-top:0}
+  #trim .row.part{border-top:1px solid rgba(185,139,74,.34);margin-top:1.3em;padding-top:1.8em}
+  #trim .k{font-size:9.5px;letter-spacing:.3em;color:rgba(232,220,196,.38);line-height:1.7}
+  #trim .v{font-size:13px;letter-spacing:.16em;color:rgba(240,228,200,.86);text-align:right;
+    white-space:nowrap}
+  #trim .v.off{font-size:9.5px;letter-spacing:.28em;color:rgba(232,220,196,.30)}
+
+  /* a continuous control: a thin rule, a bronze fill, and a mark standing on it */
+  #trim .rule{position:relative;height:22px;cursor:pointer;outline:0;touch-action:none}
+  #trim .rule::before{content:'';position:absolute;left:0;right:0;top:10px;height:1px;
+    background:rgba(232,220,196,.13)}
+  #trim .rule i{position:absolute;left:0;top:10px;height:1px;background:rgba(185,139,74,.60)}
+  #trim .rule b{position:absolute;top:4px;width:1px;height:13px;margin-left:-.5px;
+    background:#d8c9a6;transition:height .3s ease,top .3s ease,background .3s ease,box-shadow .3s ease}
+  #trim .rule:hover b,#trim .rule:focus b,#trim .rule.held b{top:1px;height:19px;
+    background:#f3e6c6;box-shadow:0 0 11px rgba(226,197,138,.6)}
+
+  /* an enumerated control: words, and a bronze rule beneath the one that holds */
+  #trim .opts{display:flex;gap:2.6em}
+  #trim .opts button{background:none;border:0;font-family:var(--serif);font-size:12px;
+    letter-spacing:.3em;margin-left:.3em;color:#5d5645;cursor:pointer;padding:.2em 0;
+    position:relative;transition:color .3s}
+  #trim .opts button:hover{color:#b9ad92}
+  #trim .opts button.sel{color:#f3e6c6}
+  #trim .opts button.sel::after{content:'';position:absolute;left:0;right:.3em;bottom:-.4em;
+    height:1px;background:var(--bronze)}
+
+  #trim .note{margin-top:2.4em;width:min(600px,86vw);font-size:11.5px;line-height:2.15;
+    color:rgba(200,188,162,.38);font-style:italic;text-align:center}
+  #trim nav{margin-top:3.0em;pointer-events:auto}
+  #trim nav button{background:none;border:0;color:#a99b7e;font-family:var(--serif);
+    font-size:14px;letter-spacing:.3em;margin-left:.3em;cursor:pointer;
+    transition:color .25s,letter-spacing .3s}
+  #trim nav button:hover{color:#f2e6c8;letter-spacing:.42em}
 </style>
 </head>
 <body>
@@ -172,11 +232,22 @@
   <h2>BECALMED</h2>
   <nav>
     <button data-act="resume">RETURN TO THE DECK</button>
+    <button data-act="settings">THE SHIP'S TRIM</button>
+    <button data-act="save">SET DOWN THE LOG</button>
     <button data-act="title">ABANDON THE VOYAGE</button>
   </nav>
+  <div id="pausenote"></div>
   <div id="log"></div>
 </div>
 
+<div id="trim">
+  <h2>THE SHIP'S TRIM</h2>
+  <div class="rows"></div>
+  <div class="note"></div>
+  <nav><button data-act="back">RETURN</button></nav>
+</div>
+
 <script type="module" src="/src/main.js"></script>
+<script type="module" src="/src/ui/menu.js"></script>
 </body>
 </html>
