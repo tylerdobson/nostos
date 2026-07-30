@@ -189,8 +189,11 @@ export function attachDebug(game) {
       const c = gl();
       const W = c.drawingBufferWidth, H = c.drawingBufferHeight;
       const buf = new Uint8Array(W * H * 4);
+      // Render WITHOUT ticking the simulation. d.step() advances the world, so
+      // the ship bobs and the camera drifts between reads and no two frames
+      // are comparable -- LOD0 would differ from itself.
       const grab = () => {
-        d.step(1);
+        g.post.render(g.scene, g.camera, g.engine.elapsed);
         c.readPixels(0, 0, W, H, c.RGBA, c.UNSIGNED_BYTE, buf);
         return buf.slice();
       };
@@ -211,42 +214,69 @@ export function attachDebug(game) {
       };
 
       d.clearInspect();
-      // look up at open sky so the asset sits against a clean, static field
-      const savedPitch = g.player ? g.player.pitch : 0;
-      if (g.player) g.player.pitch = 0.55;
-      d.step(3);
-      const bg = grab();
+
+      // Isolate the asset. The live ocean and ship animate between reads, so
+      // differencing against the running scene measures wave motion, not
+      // geometry. Hiding everything gives a static field to threshold against.
+      const hidden = [];
+      for (const ch of g.scene.children) {
+        if (ch.visible && ch !== g.camera) { hidden.push(ch); ch.visible = false; }
+      }
 
       const cam = g.camera;
       const fwd = new THREE.Vector3();
       cam.getWorldDirection(fwd);
       g.scene.add(inst);
       d._inspect = inst;
+      inst.autoUpdate = false;          // LOD.update() would re-pick by distance
+      inst.levels.forEach((l) => { l.object.visible = false; });
 
+      const bg = grab();
       const out = [];
-      let ref = null;
+
+      // Silhouette fidelity is a property of the SHAPE, so all LODs are
+      // compared at one fixed close distance where the mask is well sampled.
+      // Measuring at the real switch distance is useless: a 0.15 m cup at 8 m
+      // covers about two pixels, and any LOD "passes" against two pixels.
+      // Screen coverage at the switch distance is reported separately, so you
+      // can see how much the delta actually matters.
+      const testDist = dist ?? 0.45;
+      inst.position.copy(cam.position).addScaledVector(fwd, testDist);
+
+      inst.levels.forEach((l, j) => { l.object.visible = (j === 0); });
+      const ref = maskOf(grab(), bg);
+
+      const halfH = Math.tan((cam.fov * Math.PI / 180) * 0.5);
       for (let i = 0; i < inst.levels.length; i++) {
-        const useDist = dist ?? Math.max(0.45, inst.levels[i].distance || 0.45);
-        inst.position.copy(cam.position).addScaledVector(fwd, useDist);
-        inst.levels.forEach((l, j) => { l.object.visible = (i === j); });
-        // LOD.update() would re-pick by distance, so drive visibility by hand
-        inst.autoUpdate = false;
+        inst.levels.forEach((l, j) => { l.object.visible = (j === i); });
         const mk = maskOf(grab(), bg);
-        if (i === 0) ref = mk;
         let sym = 0;
         for (let p = 0; p < mk.m.length; p++) if (mk.m[p] !== ref.m[p]) sym++;
+
+        const sw = inst.levels[i].distance || testDist;
+        const box = new THREE.Box3().setFromObject(inst.levels[i].object);
+        const r = box.getSize(new THREE.Vector3()).length() * 0.5;
+        const cov = r / (sw * halfH || 1);
+        const delta = ref.n ? (100 * sym / ref.n) : 0;
         out.push({
           level: 'LOD' + i,
-          switchDist: inst.levels[i].distance,
-          measuredAt: +useDist.toFixed(2),
+          comparedAt: +testDist.toFixed(2),
+          switchDist: sw,
+          refPixels: ref.n,
           pixels: mk.n,
-          silhouetteDeltaPct: ref.n ? +(100 * sym / ref.n).toFixed(2) : null,
+          silhouetteDeltaPct: +delta.toFixed(2),
+          coverageAtSwitch: +(100 * cov).toFixed(1) + '%',
+          // Shape error alone over-reports: a 32% boundary delta on something
+          // covering 3% of the screen is invisible. What matters is the error
+          // scaled by how much frame it actually occupies when it switches.
+          effectiveErrorPct: +(delta * cov).toFixed(2),
         });
       }
+
       inst.levels.forEach((l) => { l.object.visible = true; });
       inst.autoUpdate = true;
       d.clearInspect();
-      if (g.player) g.player.pitch = savedPitch;
+      for (const ch of hidden) ch.visible = true;
       d.step(2);
       return out;
     },
