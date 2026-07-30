@@ -217,4 +217,25 @@ export const MANIFEST = [
     tier: 1,
     lodDistances: [0, 2.5, 8],   // metres; LOD0 / LOD1 / LOD2
   },
+  {
+    // Six Archaic Greek male heads, ages ~19 to ~60, three LODs each:
+    // head_a_LOD0 .. head_f_LOD2. Origin at the neck joint (base of skull),
+    // so a head drops straight onto a rower's neck at the crew rig's
+    // `head` node with no offset.
+    //
+    // NOTE for whoever wires the crew: all eighteen meshes live in one file
+    // on one material, which is deliberate -- it is one 2304 texture set and
+    // one draw call per LOD for the whole crew instead of six of each. That
+    // does mean `instance('crew_heads')` is not useful here: it assembles a
+    // THREE.LOD from every *_LOD<n> mesh in the file and so would build one
+    // eighteen-level ladder. Pull the three meshes you want by name off
+    // `assets.info('crew_heads').gltf.scene` and build the LOD per rower, or
+    // just share the geometry and skip LOD for the far ones.
+    id: 'crew_heads',
+    url: '/assets/crew_heads.glb',
+    pivot: PIVOT.CENTRE,    // origin at the neck joint, +Z forward after Y-up
+    texel: 2048,            // measured 2131 px/m girth, 2102 px/m up the face
+    tier: 2,
+    lodDistances: [0, 3, 9],
+  },
 ];
