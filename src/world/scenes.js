@@ -7,7 +7,14 @@
 // ---------------------------------------------------------------------------
 
 import * as THREE from 'three';
-import { loft, tube, revolve, timber, mergeGeometries, xform, trs } from './geo.js';
+// `revolve` here builds columns and the hearth kerb — solids seen from
+// outside — so it takes the corrected wrapper. `loft` is left RAW on
+// purpose: it builds the cave shell, which is an interior surface whose
+// normals should point inward, into the cavity, toward the viewer.
+import {
+  loft, tube, orevolve as revolve, timber,
+  mergeGeometries, xform, trs,
+} from './geo.js';
 import { stoneMaterial, woodMaterial, terracottaMaterial, bronzeMaterial } from '../core/textures.js';
 import { makeNoise } from '../core/noise.js';
 

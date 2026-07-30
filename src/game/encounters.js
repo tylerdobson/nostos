@@ -11,7 +11,15 @@
 // ---------------------------------------------------------------------------
 
 import * as THREE from 'three';
-import { revolve, tube, loft, timber, mergeGeometries, xform, trs } from '../world/geo.js';
+// geo.js's raw builders wind their front face on the INSIDE of the surface
+// (measured: mean radial dot -0.83 for revolve, -0.53 for tube; 0% of
+// vertices point outward). Every prop in this file is a solid seen from
+// outside, so it needs the corrected wrappers or it renders inside-out and
+// is lit backwards.
+import {
+  orevolve as revolve, otube as tube, loft, timber,
+  mergeGeometries, xform, trs,
+} from '../world/geo.js';
 import { terracottaMaterial, bronzeMaterial, stoneMaterial, woodMaterial } from '../core/textures.js';
 
 // ---------------------------------------------------------------------------
@@ -669,6 +677,7 @@ export const ENCOUNTERS = {
     ], { timeout: 20, onTimeout: 'middle' });
 
     game.onStorm(0.4);
+    game.onStrait(true);
 
     if (side === 'scylla') {
       // The six are named, and the game makes you watch the names go.
@@ -703,6 +712,7 @@ export const ENCOUNTERS = {
       await cin.line(null, taken.map((t) => t.name).join(', ') + '.', 4.4);
       st.resolve('scylla', { nostos: 1, flag: 'chose-nothing' });
     }
+    game.onStrait(false);
     game.onStorm(0);
   },
 
