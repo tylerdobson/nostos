@@ -20,6 +20,8 @@ import { World, CHART } from './world/islands.js';
 import { ENCOUNTERS } from './game/encounters.js';
 import { Cinema } from './ui/cinema.js';
 import { buildCave, buildHall } from './world/scenes.js';
+import { AudioEngine } from './audio/audio.js';
+import { installShell } from './ui/menu.js';
 
 const boot = document.getElementById('boot');
 const bootBar = document.querySelector('#bootbar i');
@@ -123,6 +125,19 @@ class Game {
 
     this.input = new Input(this.renderer.domElement);
     this.hud = new HUD(this.state);
+
+    // The audio graph cannot start until a user gesture, so it is built on the
+    // first click or key and silently skipped if the browser refuses.
+    this.audio = new AudioEngine();
+    const startAudio = async () => {
+      const ok = await this.audio.init();
+      if (ok) {
+        removeEventListener('pointerdown', startAudio);
+        removeEventListener('keydown', startAudio);
+      }
+    };
+    addEventListener('pointerdown', startAudio);
+    addEventListener('keydown', startAudio);
     this.cinema = new Cinema(this);
     this._buildStations();
 
@@ -141,6 +156,8 @@ class Game {
 
     await progress(1.0, 'ready');
     attachDebug(this);
+    // settings are read and applied here, before the first frame is drawn
+    installShell(this);
   }
 
   _buildCrew() {
@@ -291,7 +308,10 @@ class Game {
       else if (crewTarget) { this._speakTo(crewTarget); }
       else if (best) {
         if (best.id === 'helm') p.takeStation('helm', best.local.clone(), Math.PI);
-        else if (best.id === 'hatch') p.toggleBelow();
+        else if (best.id === 'hatch') {
+          p.toggleBelow();
+          if (this.audio) this.audio.setSpace(p.below ? 'hold' : 'open');
+        }
         else if (best.id === 'sail') this._toggleSail();
       }
     }
@@ -372,12 +392,14 @@ class Game {
     this.cave.userData.mouthLight.intensity = 2.4;
     this.cave.userData.fire.intensity = 3.0;
     this.inInterior = true;
+    if (this.audio) this.audio.setSpace('cave');
   }
 
   exitCave() {
     if (this.cave) { this.scene.remove(this.cave); this.cave = null; }
     this.player.groundFn = null;
     this.inInterior = false;
+    if (this.audio) this.audio.setSpace('open');
   }
 
   enterHall(island) {
@@ -392,6 +414,7 @@ class Game {
     this.player.local.set(p.x, 80.1, p.z + 6.5);
     this.player.yaw = 0;
     this.inInterior = true;
+    if (this.audio) this.audio.setSpace('hall');
   }
 
   /** Poseidon takes an interest. The weather stops being weather. */
@@ -401,7 +424,9 @@ class Game {
   }
 
   onStorm(level) {
+    const rising = level > (this.stormLevel ?? 0) + 0.25;
     this.stormLevel = level;
+    if (this.audio && rising) this.audio.thunder(0.3 + Math.random() * 0.5);
     this.sky.setWeather({
       cloudCover: 0.32 + level * 0.62,
       stormy: level,
@@ -411,7 +436,12 @@ class Game {
     this.post.u.uWetness.value = level * 0.7;
   }
 
-  onSirenSong(on) { this.sirenSong = on; }
+  onSirenSong(on) {
+    this.sirenSong = on;
+    if (this.audio) this.audio.sirenSong(on);
+  }
+
+  onStrait(on) { if (this.audio) this.audio.straitRoar(on); }
 
   onLoseShip() {
     this.shipLost = true;
@@ -570,6 +600,17 @@ class Game {
 
     if (this.mode === 'sea') this.hud.update(dt, this);
 
+    if (this.audio && this.audio.ready) {
+      // The panners are placed from the ship's world matrix, and three.js does
+      // not refresh it until render() — do it here so the emitters are not a
+      // frame behind the hull they are attached to.
+      this.ship.updateMatrixWorld(true);
+      this.camera.updateMatrixWorld(true);
+      this.audio.setListener(this.camera);
+      this.audio.updateEmitters(this.ship);
+      this.audio.update(dt, this);
+    }
+
     this.post.render(this.scene, this.camera, elapsed);
     this.input.endFrame();
   }
@@ -594,11 +635,9 @@ window.__game = game;
     fade.style.opacity = '0';
     game.mode = 'title';
 
-    menu.querySelectorAll('button').forEach((b) => {
-      b.addEventListener('click', () => {
-        if (b.dataset.act === 'new') game.begin();
-      });
-    });
+    // the shell owns all three title buttons, and arms or disables CONTINUE
+    // according to whether a log was ever set down
+    game.shell.showTitle();
   } catch (err) {
     console.error(err);
     bootHint.textContent = 'the ship broke up: ' + err.message;
