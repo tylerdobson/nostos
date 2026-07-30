@@ -19,6 +19,7 @@ import { VoyageState } from './game/state.js';
 import { World, CHART } from './world/islands.js';
 import { ENCOUNTERS } from './game/encounters.js';
 import { Cinema } from './ui/cinema.js';
+import { Passage } from './game/passage.js';           // PASSAGE
 import { buildCave, buildHall } from './world/scenes.js';
 import { AudioEngine } from './audio/audio.js';
 import { installShell } from './ui/menu.js';
@@ -66,6 +67,7 @@ class Game {
     this.dayOfYear = 196;
     this.day = 0;
     this.timeScale = 55;       // seconds of world time per real second
+    this.oceanTimeScale = 1;   // PASSAGE: the sea's own clock, sped up in a passage
 
     this.mode = 'boot';        // boot | title | sea | encounter
     this._exp = undefined;
@@ -139,6 +141,7 @@ class Game {
     addEventListener('pointerdown', startAudio);
     addEventListener('keydown', startAudio);
     this.cinema = new Cinema(this);
+    this.passage = new Passage(this);                  // PASSAGE
     this._buildStations();
 
     this.world = new World(this.scene, this.quality);
@@ -511,6 +514,8 @@ class Game {
 
     if (this.mode === 'ashore') {
       this.player.update(dt, this.input);
+    } else if (this.mode === 'sea' && !this.busy && this.passage.active) {
+      this.passage.update(dt);                         // PASSAGE owns the frame
     } else if (this.mode === 'sea' && !this.busy) {
       this._controls(dt);
       this.wind.update(dt);
@@ -520,6 +525,7 @@ class Game {
       this.player.update(dt, this.input);
       this._updateStations(dt);
       this._checkLandfall();
+      this.passage.offer();                            // PASSAGE
     } else if (this.mode === 'sea' && this.busy) {
       // an encounter is driving: keep the world alive but take no orders
       this.wind.update(dt);
@@ -582,7 +588,7 @@ class Game {
 
     this.world.update(this.vessel.pos.x, this.vessel.pos.y, this.sky, this.camera);
     this.sky.update(dt, this.camera, this.ship.position);
-    this.ocean.update(dt, this.camera, this.sky);
+    this.ocean.update(dt * this.oceanTimeScale, this.camera, this.sky);   // PASSAGE
     this.sky.renderSky(this.renderer, 1);
     if (this.engine.frame % 24 === 0) this.sky.updateEnvironment(this.renderer, this.scene);
 

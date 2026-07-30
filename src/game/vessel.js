@@ -224,6 +224,35 @@ export class Vessel {
     this.ship.rotation.y = this.heading;
   }
 
+  /**
+   * Run the hull forward by `worldDt` seconds of voyage time in steps small
+   * enough that the integration still means something.
+   *
+   * A passage compresses forty minutes of sailing into forty seconds, which
+   * hands this model a timestep of a whole world-minute per frame. Explicit
+   * Euler over the wave-making wall — a speed to the eighth power — walks
+   * clean through it at that step and the ship arrives doing thirty knots.
+   * Substepping at half a world-second costs a few dozen cheap iterations a
+   * frame and keeps the answer the same one the real-time sail gives.
+   *
+   * `animDt` is the real frame time. The oar phase is the one piece of state
+   * in here that is watched rather than integrated, so it is advanced at the
+   * rate the player's eye runs at, not the rate the voyage does — otherwise
+   * fifty men row at eighty times and the bank turns into a strobe.
+   */
+  advance(worldDt, wind, crewStrength = 1, { maxStep = 0.5, animDt = null } = {}) {
+    if (worldDt <= 0) return 0;
+    const phase0 = this.oarPhase;
+    const n = Math.min(240, Math.max(1, Math.ceil(worldDt / maxStep)));
+    const h = worldDt / n;
+    for (let i = 0; i < n; i++) this.update(h, wind, crewStrength);
+    if (animDt !== null) {
+      this.oarPhase = phase0 + (this.oarsOut > 0.01
+        ? animDt * (1.05 + this.oarEffort * 1.5) : 0);
+    }
+    return n;
+  }
+
   /** Knots, for the log line and the player's sense of progress. */
   get knots() { return this.speed * 1.94384; }
 

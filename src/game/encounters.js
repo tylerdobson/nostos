@@ -656,19 +656,46 @@ export const ENCOUNTERS = {
   },
 
   // -------------------------------------------------------------------------
-  // SCYLLA AND CHARYBDIS — you pick which men die.
+  // SCYLLA AND CHARYBDIS — you pick which men die, and then you watch them go.
+  //
+  // This is the one landfall that must not be read. The six are the men whose
+  // benches the player has walked past since Troy; they are lifted off those
+  // benches one at a time, in front of him, and the seats are cold for the rest
+  // of the voyage. Everything narrated here is what a man could think while it
+  // was happening — nothing describes the event itself.
   // -------------------------------------------------------------------------
   async scylla(game, island, cin) {
     const st = game.state;
-    await cin.card('THE STRAIT', 'two crags, and no good water between them');
-    await cin.lines([
-      'Circe told you this part twice, and both times she told you the same thing.',
-      'One side is a rock with a thing living in it that takes six men and only six.',
-      'The other side is a mouth in the water that takes everything.',
-    ]);
+    game.onStrait(true);
+    game.onStorm(0.4);
 
-    await cin.line(null, 'You do not tell the crew about the six. You have thought about it '
-      + 'and you have decided not to.', 5.0);
+    await cin.card('THE STRAIT', 'two crags, and no good water between them');
+
+    // --- put him amidships, on his feet, where the bank is on both sides
+    goAboard(game);
+    game.player.local.set(0, game.ship.userData.walk.gangwayY, -1.0);
+    game.vessel.sailSet = 0;
+    game.vessel.oarsOut = 1;
+    game.vessel.oarEffort = 0.9;
+
+    // the crags, first, because that is what he would look at
+    await stg.look(game, new THREE.Vector3(0.6, 42, 60), 2.6);
+    await cin.line(null, 'Circe told you this part twice, and both times the same. '
+      + 'One crag takes six. The other takes everything.', 5.2);
+
+    // --- and then the men. He counts the bank before he spends any of it.
+    await stg.sweepBenches(game, 5.0);
+    await cin.line(null, 'You do not tell them about the six.', 3.0);
+
+    // Eurylochos is watching you decide, and he does not look away.
+    const eury = (game.namedCrew || []).find((c) => c.info.name === 'Eurylochos'
+      && c.root.visible);
+    if (eury) {
+      eury.lookAt = game.camera.position.clone();
+      eury._lookTimer = 22.0;
+      await stg.look(game, eury.localAnchor, 1.4);
+      await cin.wait(1.2);
+    }
 
     const side = await cin.choose([
       { text: 'Hug the rock. Lose six.', value: 'scylla' },
@@ -676,44 +703,74 @@ export const ENCOUNTERS = {
       { text: 'Straight down the middle and let it happen.', value: 'middle' },
     ], { timeout: 20, onTimeout: 'middle' });
 
-    game.onStorm(0.4);
-    game.onStrait(true);
+    cin.damp(true);
+    game.onStorm(0.55);
 
-    if (side === 'scylla') {
-      // The six are named, and the game makes you watch the names go.
-      const taken = st.lose(6, 'Scylla');
-      await cin.flash(0.3, 0.8);
-      await cin.line(null, 'She comes down off the rock without a sound.', 3.6);
-      for (const t of taken.slice(0, 6)) {
-        await cin.line(null, t.name + '.', 1.5);
+    if (side === 'scylla' || side === 'middle') {
+      // The six are the six nearest his own feet: the benches he has been
+      // walking between all voyage, which is the whole of the arithmetic.
+      const prefer = stg.nearestMen(game, 6, game.player.local);
+
+      if (side === 'middle') {
+        // not choosing means the first one goes while you are facing the wrong
+        // way, and you turn round into the middle of it
+        await stg.look(game, new THREE.Vector3(-9, 8, -18), 1.6);
+        await cin.wait(1.0);
+        await stg.jolt(game, 0.10, 0.8);
+      } else {
+        await cin.line(null, 'You steer for the rock, on purpose, because the arithmetic '
+          + 'is better on that side.', 4.6);
       }
-      await cin.line(null, 'They call your name on the way up. Every one of them, by name, '
-        + 'and there is nothing at all you can do about it.', 5.6);
-      await cin.line(null, 'It is the worst thing you have ever seen and you steered toward it '
-        + 'on purpose because the arithmetic was better.', 5.6);
-      st.resolve('scylla', { nostos: 2, athena: 2, poseidon: 1, flag: 'chose-scylla' });
-    } else if (side === 'charybdis') {
+
+      await cin.flash(0.22, 0.9);
+      const taken = await stg.takeMen(game, cin, 6, 'Scylla', {
+        prefer, style: 'snatch',
+      });
+
+      // the bank he has just paid out of
+      cin.damp(false);
+      await stg.sweepBenches(game, 5.6);
+      stg.release(game);
+      await cin.line(null, `Six benches. You can put a name on every one of them, `
+        + 'and you will be able to for the rest of your life.', 5.4);
+      if (side === 'middle') {
+        st.resolve('scylla', { nostos: 1, flag: 'chose-nothing' });
+      } else {
+        st.resolve('scylla', { nostos: 2, athena: 2, poseidon: 1, flag: 'chose-scylla' });
+      }
+      void taken;
+    } else {
       const roll = Math.random() + st.favour * 0.35 - st.seaMalice * 0.4;
+      // the sea going down the drain is something you look over the side at
+      await stg.look(game, new THREE.Vector3(-6.5, -3.0, 4.0), 2.2);
       if (roll > 0.55) {
-        await cin.line(null, 'The mouth opens on the wrong beat and you go past it '
-          + 'close enough to see the bottom of the sea.', 5.0);
+        await cin.line(null, 'The mouth opens on the wrong beat, and you go past it close '
+          + 'enough to see the bottom of the sea.', 5.0);
+        cin.damp(false);
+        stg.release(game);
         await cin.line(null, 'Nobody dies. Nobody will believe you.', 3.8);
         st.resolve('scylla', { kleos: 5, athena: 1, nostos: 2, flag: 'beat-charybdis' });
       } else {
-        const taken = st.lose(Math.max(8, Math.floor(st.crewCount * 0.4)), 'Charybdis');
         await cin.flash(0.8, 1.6);
-        await cin.line(null, 'It takes the sea down with it and the ship goes down the side of the hole.', 4.6);
-        await cin.line(null, `${taken.length} men go over. You do not get to choose which.`, 4.4);
+        await stg.jolt(game, 0.16, 1.6);
+        game.onStorm(0.9);
+        await stg.takeMen(game, cin, Math.max(8, Math.floor(st.crewCount * 0.4)), 'Charybdis', {
+          style: 'bench', show: 3,
+        });
+        cin.damp(false);
+        await stg.sweepBenches(game, 5.0);
+        stg.release(game);
+        await cin.line(null, 'You do not get to choose which.', 3.4);
         st.resolve('scylla', { poseidon: 4, nostos: -1, flag: 'charybdis-hit' });
       }
-    } else {
-      const taken = st.lose(6, 'Scylla');
-      await cin.line(null, 'Not choosing is a choice, and it costs exactly the same six.', 4.4);
-      await cin.line(null, taken.map((t) => t.name).join(', ') + '.', 4.4);
-      st.resolve('scylla', { nostos: 1, flag: 'chose-nothing' });
     }
+
+    cin.damp(false);
+    stg.release(game);
     game.onStrait(false);
     game.onStorm(0);
+    game.vessel.oarEffort = 0;
+    game.vessel.oarsOut = 0;
   },
 
   // -------------------------------------------------------------------------
