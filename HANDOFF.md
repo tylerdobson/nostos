@@ -22,8 +22,9 @@ kylix loads, **9.98 ms median frame** on Intel Iris Xe.
    over the 16.7 ms gate**, and it was already ~17.4 ms *before* tonight's
    visual work. This is unresolved and it is the thing most likely to make the
    build fail your standard.
-3. **Whether the crew still read as mannequins** — and read the root-cause
-   section first, because the reason was not what either of us assumed.
+3. **The crew, in `shots/VERIFY-crew-recovered.png`.** They now read as fifty
+   individuals — faces with brow, nose, mouth and sockets, varied skin tones,
+   grey hair on the older men. Judge whether that is far enough.
 
 ---
 
@@ -80,8 +81,21 @@ surface, and normals pointing inward toward the viewer are correct there.
 | when | median | p90 | notes |
 |---|---|---|---|
 | baseline `v1-working` | **9.98 ms** | 15.0 ms | 1920×842, Iris Xe, GPU timer queries, clean tab |
-| HEAD before hull work | ~17.4 ms | — | measured by the hull agent under contention |
-| after hull work | ~18.05 ms | — | its own change cost **+0.6 ms** |
+| HEAD before hull work | ~17.4 ms | — | measured under 4-tab contention — **not trustworthy** |
+| after hull work | ~18.05 ms | — | same contention; its own delta was **+0.6 ms** |
+| **after crew + fittings (`99dbb5f`)** | **9.37 ms** | 21.5 ms | render-only, one quiet tab — **inside the gate** |
+
+**The 17–18 ms scare was contention, not the build.** Measured render-only in a
+single quiet tab with everything landed, the frame is **9.37 ms median**, in
+line with the 9.98 ms baseline. A single frame is **141 draw calls / 521k
+triangles**, against ~146 before the visual work — so the crew, the fittings and
+the interior stowage cost almost nothing. The p90 of 21.5 ms is one outlier
+sample in three; the tab still backgrounds and stalls, so p90 here is noise.
+
+One real inefficiency found while checking: **5 named crewmen cost 100 draw
+calls** (18 meshes each, plus shadow passes). Not a gate failure, but it is
+two-thirds of the frame's draw calls for five background men and should be
+merged.
 
 **This does not add up and I have not resolved it.** The +0.6 ms delta is
 trustworthy (same tab, same view, files swapped and back). The absolute jump
