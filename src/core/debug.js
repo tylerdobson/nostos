@@ -188,9 +188,27 @@ export function attachDebug(game) {
 
       const c = gl();
       const W = c.drawingBufferWidth, H = c.drawingBufferHeight;
+
+      // A tab that crashed and reopened minimised collapses the drawing buffer
+      // to 1x1, and every pixel measurement taken after that is silently
+      // meaningless. Refuse rather than return a confident wrong number.
+      //
+      // A merely hidden tab is fine: this routine renders by hand rather than
+      // waiting on rAF, so it does not care whether the compositor is running.
+      if (W < 64 || H < 64) {
+        return { error: `unusable framebuffer ${W}x${H} — a crashed or ` +
+                        'minimised tab collapses it; reopen and retry' };
+      }
+
       const buf = new Uint8Array(W * H * 4);
+      // Render WITHOUT ticking. The old version called step(), which advanced
+      // the world clock, the sun and the exposure between the background grab
+      // and each object grab — so the two frames differed over the whole
+      // screen and the "silhouette" mask was two uncorrelated noise fields.
+      // It still reported LOD0-vs-itself as 0.00%, because that compares a
+      // frame against itself and cannot detect the fault by construction.
       const grab = () => {
-        d.step(1);
+        g.post.render(g.scene, g.camera, g.engine.elapsed);
         c.readPixels(0, 0, W, H, c.RGBA, c.UNSIGNED_BYTE, buf);
         return buf.slice();
       };
@@ -211,11 +229,23 @@ export function attachDebug(game) {
       };
 
       d.clearInspect();
-      // look up at open sky so the asset sits against a clean, static field
-      const savedPitch = g.player ? g.player.pitch : 0;
-      if (g.player) g.player.pitch = 0.55;
+      // Look up at open sky so the asset sits against a clean, static field.
+      // g.player does not exist on the title screen, so fall back to pitching
+      // the camera itself rather than silently skipping this.
+      const savedPitch = g.player ? g.player.pitch : null;
+      const savedQuat = g.camera.quaternion.clone();
+      if (g.player) { g.player.pitch = 0.55; d.step(3); }
+      else { g.camera.rotateX(0.55); g.camera.updateMatrixWorld(true); }
+
+      // Settle the sky and exposure ONCE, before any measurement, then hold
+      // them still for the whole comparison.
       d.step(3);
       const bg = grab();
+
+      // Null test: an empty frame against an empty frame must differ by
+      // exactly zero pixels. If it does not, the rig is not static and every
+      // number below is noise — so say so instead of reporting it.
+      const nullMask = maskOf(grab(), bg);
 
       const cam = g.camera;
       const fwd = new THREE.Vector3();
@@ -246,9 +276,21 @@ export function attachDebug(game) {
       inst.levels.forEach((l) => { l.object.visible = true; });
       inst.autoUpdate = true;
       d.clearInspect();
-      if (g.player) g.player.pitch = savedPitch;
+      if (g.player) { g.player.pitch = savedPitch; }
+      else { g.camera.quaternion.copy(savedQuat); g.camera.updateMatrixWorld(true); }
       d.step(2);
-      return out;
+
+      return {
+        // The honest determinism check. LOD0-vs-itself is NOT one: it compares
+        // a frame with itself and is 0.00% however broken the rig is.
+        nullMaskPixels: nullMask.n,
+        valid: nullMask.n === 0,
+        note: nullMask.n === 0
+          ? 'static rig: deltas below are real'
+          : `NOT STATIC — ${nullMask.n} px differ between two identical empty ` +
+            'frames, so every delta below is noise',
+        levels: out,
+      };
     },
 
     /** Spin the inspected asset, for turntable contact sheets. */
