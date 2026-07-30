@@ -29,6 +29,20 @@ gone wrong, `git checkout v1-working` is a known-good build.
 | when | median | p90 | notes |
 |---|---|---|---|
 | baseline `v1-working` | **9.98 ms** | 15.0 ms | 1920×842, Iris Xe, GPU timer queries, open sea 13:00 |
+| after shell + audio + wiring | *unchanged, not re-measured* | — | see below |
+
+**Why the second row is not a number.** Nothing in the shell/audio/wiring
+landing adds GPU load — the menus are DOM, Web Audio runs on its own thread
+(`update()` costs 0.046 ms on the main thread), and the integration adds two
+matrix refreshes per frame. So the baseline figure still describes what is
+pushed.
+
+**And a constraint that mattered:** while the parallel agents were running there
+were four Chrome tabs each holding a live WebGL game, plus Blender, all on one
+integrated GPU. Under that contention a single `tick()` can exceed a 45-second
+CDP timeout. **Any frame time measured in that state is worthless**, so I did
+not record one. The authoritative measurement is taken in a single quiet tab
+once the visual work lands — that is the number that gates the build.
 
 Budget is 16.7 ms. Measured with `EXT_disjoint_timer_query_webgl2`, never rAF —
 the tab backgrounds during automated runs and rAF timing lies (it reported
@@ -62,6 +76,40 @@ reload → CONTINUE, including each dead man's day and cause. Ten deliberately
 malformed payloads all refused without throwing; a poisoned save still boots.
 Autosave refuses to write mid-encounter (measured: a day rollover during
 `busy` did not write; the next one after it cleared did).
+
+### Audio — DONE, pushed (`2b0d675`), with caveats
+**The audio I wrote and wired yesterday had never made a single correct sound
+and could not have.** `_burst()` referenced an undeclared `at`, throwing a
+`ReferenceError` on every call — the breakers, the oar catch and pull, the
+crew's breath, the sail, the luff, the timber. That is most of the game, and
+it was my bug, introduced when I patched positional emitters in. I had reported
+the audio as written-and-wired. It was neither working nor verified, and only a
+verification pass caught it.
+
+Six further silent bugs behind it, all now fixed. The two worth knowing:
+Web Audio interprets `BiquadFilterNode.Q` **in decibels** for lowpass/highpass,
+so the sub-cut that existed to clear the bottom end was instead putting a
+**+4.2 dB resonance at 45–58 Hz**; and `_knock()` measured **43 dB below** the
+gain it asked for, which meant the oars — "the ship's heartbeat" — were
+inaudible under the hull rush.
+
+Verified by rendering the graph through an `OfflineAudioContext` and measuring
+actual samples (`src/audio/selftest.js`, **27/27 pass**):
+
+| | measured |
+|---|---|
+| clipping, worst case (sirens + strait + storm + full oars, master 1.0) | **0 samples ≥ 0.999**, peak 0.592 |
+| sea does not loop | max autocorr **0.129**; −0.002 / −0.013 at buffer periods |
+| oars locked to `oarPhase` | 5/5 strokes, jitter **0.3 ms** |
+| ship sounds emptier as men die | 45 → 20 → 5 men = **−18.8 dB** |
+| bow slams on real pitch events | 8/8 on a bow-down rate in the steepest 20% |
+| `update()` cost, real game objects | mean **0.046 ms** (~1% of budget) |
+
+**Caveats, stated rather than buried:** nobody has *listened* to it — every
+claim above is a number, not a judgement that it sounds good. It was never
+verified inside a live 60 fps frame loop, because the automated tab stays
+`document.hidden` and one `tick()` there took 23.8 s (a WebGL stall, unrelated
+to audio). Front/back is `equalpower` plus a shadowing lowpass, not true HRTF.
 
 ### Judge briefs locked before the work
 `tools/judges/VISUAL_JUDGE.md` and `tools/judges/FEEL_JUDGE.md`, committed
