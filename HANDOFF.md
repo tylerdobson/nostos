@@ -262,10 +262,47 @@ VRAM against **38 MB** shared, because GLTFLoader makes its own texture per file
 
 ---
 
+## Branch `crew-rework` — rescued work, DO NOT MERGE BLIND
+
+Both the crew agent and the Blender agent **stalled** (watchdog: no progress for
+600 s) with substantial uncommitted work in the tree. I rescued it to branch
+**`crew-rework`** (`a34cd66`, pushed) rather than to `main`, because it is
+visibly mid-operation.
+
+**What is genuinely good on that branch — the root-cause fix works:**
+crew.js now imports `otube` and passes `flip: true` on its closed lofts.
+Verified numerically on the live rower geometry in the running game:
+
+| | before | after |
+|---|---|---|
+| mean radial dot | −0.723 | **+0.178** |
+| % verts pointing outward | 0% | **64.6%** |
+
+**What is broken on it** (see `shots/Q-face.png`): the nose is an enormous
+protruding wedge that dominates the face; the eyes are flat white almonds with
+no iris, pupil or catchlight; and the standing named crew have visible gaps
+between limb segments. The agent's last words were *"Real face now. Two small
+corrections then final verification"* — it never got to make them.
+
+`main` stays at `c9c685c`. A fresh agent is on `crew-rework` now with this
+critique and instructions to finish it.
+
 ## Time-boxed and abandoned
 
 Nothing has hit the one-hour-no-progress rule and been abandoned yet. The head
 skin was time-boxed to an hour and **succeeded** inside it.
+
+## Tooling failures tonight, and what they cost
+
+- **Chrome stalls hard when several WebGL tabs are open.** With four game tabs
+  plus Blender on one Iris Xe, a single `d.step(1)` blocks past a 45-second CDP
+  timeout and the whole tab goes unresponsive. I closed the dead agents' tabs;
+  boot time went from stalling indefinitely to **4 seconds**. This is why the
+  ~17–18 ms frame numbers are untrustworthy and why I still owe you a clean one.
+- **Two agents died to a stream watchdog**, one earlier to a mid-stream API
+  error. All three were restarted; work was preserved each time.
+- `__dbg.capture()` can itself time out on a hidden tab (`toDataURL` on a large
+  canvas is slow). Pass a scale factor, or foreground the tab.
 
 ---
 
