@@ -117,35 +117,76 @@ export class AssetLibrary {
     }
     const root = e.gltf.scene.clone(true);
 
-    const tiers = [];
+    // Group LOD meshes BY BASE NAME, not into one ladder.
+    //
+    // A multi-variant file — six heads at three tiers each, say — holds
+    // eighteen `*_LOD<n>` meshes. Collapsing those into a single THREE.LOD
+    // produces an eighteen-level ladder in which every variant is a "tier" of
+    // every other, so the loader shows one man's LOD2 where another man's LOD0
+    // belongs. Keying on the name before the suffix keeps each variant its own
+    // three-level ladder, which is what the exporter meant and what packing
+    // six variants into one GLB (38 MB of shared texture instead of 227 MB)
+    // depends on.
+    const groups = new Map();
     root.traverse((o) => {
-      const m = /_LOD(\d)$/.exec(o.name);
-      if (m && o.isMesh) tiers.push({ level: +m[1], mesh: o });
+      const m = /^(.*)_LOD(\d)$/.exec(o.name);
+      if (m && o.isMesh) {
+        const base = m[1];
+        if (!groups.has(base)) groups.set(base, []);
+        groups.get(base).push({ level: +m[2], mesh: o });
+      }
     });
-    if (tiers.length > 1) {
+
+    const dists = e.lodDistances || [0, 2.5, 8];
+    const buildLadder = (tiers, name) => {
       tiers.sort((a, b) => a.level - b.level);
       const lod = new THREE.LOD();
-      const dists = e.lodDistances || [0, 2.5, 8];
+      lod.name = name;
       for (const t of tiers) {
         t.mesh.removeFromParent();
         lod.addLevel(t.mesh, dists[t.level] ?? t.level * 4);
       }
       lod.userData.assetId = id;
+      lod.userData.variant = name;
       lod.userData.pivot = e.pivot || PIVOT.CENTRE;
       lod.userData.lodTris = tiers.map((t) => {
         const g = t.mesh.geometry;
         return (g.index ? g.index.count : g.attributes.position.count) / 3;
       });
+      return lod;
+    };
+
+    const multiTier = [...groups.values()].filter((t) => t.length > 1);
+    if (multiTier.length) {
+      const ladders = [];
+      for (const [base, tiers] of groups) {
+        if (tiers.length > 1) ladders.push(buildLadder(tiers, base));
+      }
+      // one variant: hand back the ladder itself, as callers already expect
+      let out;
+      if (ladders.length === 1) {
+        out = ladders[0];
+      } else {
+        // several variants: a Group whose children are named per variant, so
+        // a caller can pull `group.getObjectByName('head_c')`
+        out = new THREE.Group();
+        out.name = id;
+        for (const l of ladders) out.add(l);
+        out.userData.assetId = id;
+        out.userData.pivot = e.pivot || PIVOT.CENTRE;
+        out.userData.variants = ladders.map((l) => l.name);
+      }
       if (ownMaterial) {
-        lod.traverse((o) => {
+        out.traverse((o) => {
           if (o.isMesh) {
             o.material = Array.isArray(o.material)
               ? o.material.map((m) => m.clone()) : o.material.clone();
           }
         });
       }
-      return lod;
+      return out;
     }
+
     if (ownMaterial) {
       root.traverse((o) => {
         if (o.isMesh) {
@@ -158,6 +199,36 @@ export class AssetLibrary {
     root.userData.assetId = id;
     root.userData.pivot = e.pivot || PIVOT.CENTRE;
     return root;
+  }
+
+  /**
+   * One named variant out of a multi-variant file, as its own LOD ladder.
+   * `assets.variant('crew_heads', 'head_c')` — this is how the crew picks a
+   * face per man without instancing all six.
+   */
+  variant(id, name, ownMaterial = false) {
+    const inst = this.instance(id, ownMaterial);
+    if (!inst) return null;
+    if (inst.name === name) return inst;
+    const found = inst.getObjectByName ? inst.getObjectByName(name) : null;
+    if (!found) {
+      console.warn(`[assets] "${id}" has no variant "${name}"`);
+      return null;
+    }
+    found.removeFromParent();
+    return found;
+  }
+
+  /** Variant names available in a multi-variant file. */
+  variants(id) {
+    const e = this.entries.get(id);
+    if (!e || !e.gltf) return [];
+    const names = new Set();
+    e.gltf.scene.traverse((o) => {
+      const m = /^(.*)_LOD\d$/.exec(o.name);
+      if (m && o.isMesh) names.add(m[1]);
+    });
+    return [...names];
   }
 
   /** Cheap stats for the debug HUD and the checklist. */
