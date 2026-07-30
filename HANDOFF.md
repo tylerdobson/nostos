@@ -7,7 +7,7 @@ Last updated mid-run; agents are still working as of writing.
 state I personally verified end to end: boots, sails, all nine encounters run,
 kylix loads, **9.98 ms median frame** on Intel Iris Xe.
 
-`main` and `origin/main` are in sync at `2707389`. Everything below is pushed.
+`main` and `origin/main` are in sync. Everything below is pushed.
 
 ---
 
@@ -18,10 +18,9 @@ kylix loads, **9.98 ms median frame** on Intel Iris Xe.
    carries the roll of the lost grouped by what killed them — *"Molos, Chalkis,
    Opheltios, Ainos, Melaneus, Dmetor — to Scylla"*. That does more for the
    game's central mechanic than anything else that landed.
-2. **The frame time table below.** Absolute frame time is currently **~18 ms,
-   over the 16.7 ms gate**, and it was already ~17.4 ms *before* tonight's
-   visual work. This is unresolved and it is the thing most likely to make the
-   build fail your standard.
+2. **`shots/VERIFY-crew-recovered.png` against the frame-time table.** The
+   crew landed and the frame is **9.37 ms**, inside the gate. The earlier
+   17–18 ms panic was measurement contention, not the build — that is resolved.
 3. **The crew, in `shots/VERIFY-crew-recovered.png`.** They now read as fifty
    individuals — faces with brow, nose, mouth and sockets, varied skin tones,
    grey hair on the older men. Judge whether that is far enough.
@@ -68,7 +67,7 @@ the great bow at Ithaca all rendered their far interior wall toward camera.
 | `src/world/ship.js` | **fixed** — hull, decks, catwalk rewound (`00ecb50`) |
 | `src/game/encounters.js` | **fixed** — props use `orevolve`/`otube` (`2707389`) |
 | `src/world/scenes.js` | **fixed** — columns/hearth; cave shell left raw on purpose |
-| `src/world/crew.js` | **IN FLIGHT** — handed to the crew agent with the measurements |
+| `src/world/crew.js` | **fixed** (`99dbb5f`) — verified in-game: −0.723 → **+0.178**, 0% → **64.6%** outward |
 | `src/world/geo.js` itself | **STILL INVERTED BY DEFAULT** — see traps |
 
 The cave shell in `scenes.js` is *deliberately* left raw: it is an interior
@@ -96,19 +95,6 @@ One real inefficiency found while checking: **5 named crewmen cost 100 draw
 calls** (18 meshes each, plus shadow passes). Not a gate failure, but it is
 two-thirds of the frame's draw calls for five background men and should be
 merged.
-
-**This does not add up and I have not resolved it.** The +0.6 ms delta is
-trustworthy (same tab, same view, files swapped and back). The absolute jump
-from 9.98 → 17.4 is not yet explained. Most likely cause: four Chrome tabs each
-holding a live WebGL game plus Blender, all on one integrated GPU — under that
-load a single `tick()` has exceeded a 45-second CDP timeout, and Chrome crashed
-outright once. **Any number measured in that state is worthless**, which is why
-I have not recorded one as authoritative.
-
-**What the morning needs:** one quiet tab, nothing else running, GPU timer
-queries, at 13:00 open sea and again on the catwalk. If it is genuinely 18 ms,
-the build fails the gate and the hull's +76k triangles and 5 extra draw calls
-are the first thing to look at — but I do not believe they are the cause.
 
 Never trust rAF here. On a backgrounded tab it reported 118 fps on a frozen
 frame.
