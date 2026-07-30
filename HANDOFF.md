@@ -111,6 +111,37 @@ verified inside a live 60 fps frame loop, because the automated tab stays
 `document.hidden` and one `tick()` there took 23.8 s (a WebGL stall, unrelated
 to audio). Front/back is `equalpower` plus a shadowing lowpass, not true HRTF.
 
+### crew_heads.glb — landed (`6595175`), geometry good, **skin badly wrong**
+Six genuinely different men, ~19 to ~60. Skull breadth 0.147–0.171 m and depth
+0.179–0.200 m vary independently, as do brow, socket depth, nose bridge (one
+broken, one aquiline), cheekbone, jaw, hairline, beard cut. Eyeballs are
+separate geometry with the lid sunk inside the globe so it overhangs the
+sclera. 5608/2816/1312 tris per head, 1 material, 3 textures, ~38 MB VRAM.
+J3 in-game: LOD0-vs-itself **0.00%** on all six; worst effectiveErrorPct 0.84
+against a limit of 3.0. Validator clean, zero n-gons/non-manifold/doubled verts.
+
+**But I looked at the shots and the skin is fired terracotta, not skin.** At
+1.2 m the four dark-bearded men read as flowerpots — the same over-saturated
+orange that had to be corrected in the procedural crew earlier in the project.
+The neck is pale pink against a dark orange face with a visible discontinuity
+at the join, which means the sunburn differential has been pushed until the
+shaded region left the skin gamut. Sent back for a **texture-only** regen,
+time-boxed to an hour. Geometry is not to be touched — it is good.
+
+Also weak, logged not fixed: eyes read as dark slits with no sclera and no
+catchlight, which is most of why the faces look dead; hair is a displaced
+shell rather than locks (the asset agent flagged this itself, correctly).
+
+### AssetLibrary LOD grouping — fixed (`c6c206a`)
+`instance()` was collapsing all eighteen `*_LOD<n>` meshes of a six-variant
+file into ONE eighteen-level ladder, so one man's LOD2 rendered where another
+man's LOD0 belonged, and `__dbg.inspect` could not address the asset at all.
+Now grouped by base name: a Group of six named three-level LODs, plus
+`variant(id, name)` and `variants(id)`. Verified in the running game against
+the real file. This is what lets multi-variant assets stay in one GLB — six
+separate files cost 227 MB of VRAM against 38 MB shared, because GLTFLoader
+makes its own texture per file.
+
 ### Judge briefs locked before the work
 `tools/judges/VISUAL_JUDGE.md` and `tools/judges/FEEL_JUDGE.md`, committed
 *before* the pass they grade so the bar cannot drift to meet the result. The
