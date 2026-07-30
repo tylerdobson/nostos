@@ -309,4 +309,26 @@ export const MANIFEST = [
     tier: 2,
     lodDistances: [0, 3, 9],
   },
+  {
+    // Six Archaic Greek crew hands -- three ages x two sides -- three LODs
+    // each: hand_L_LOD0 .. hand_R_old_LOD2. Eighteen meshes, ONE material,
+    // ONE 2048 atlas, for the same VRAM reason as crew_heads above.
+    //
+    // AssetLibrary groups *_LOD<n> by BASE NAME, so unlike crew_heads these
+    // ARE individually addressable: assets.variant('crew_hands', 'hand_R_old')
+    // gives that man's three-level ladder. assets.variants('crew_hands')
+    // lists all six.
+    //
+    // Origin is the WRIST JOINT centre with +Z running proximally down the
+    // forearm; after Y-up that is glTF +Y, so a hand drops onto a rower's
+    // forearm node with no offset and the forearm stub (20 mm) is meant to
+    // disappear inside a sleeve. PIVOT.CENTRE because the origin is a joint,
+    // not a grip and not a base.
+    id: 'crew_hands',
+    url: '/assets/crew_hands.glb',
+    pivot: PIVOT.CENTRE,
+    texel: 2048,            // measured 2802-3133 px/m across all six islands
+    tier: 1,                // met at ~0.6 m, half the head distance
+    lodDistances: [0, 1.6, 5],
+  },
 ];
