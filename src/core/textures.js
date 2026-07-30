@@ -604,6 +604,55 @@ export function woolMaterial(color = [0.38, 0.33, 0.28], size = 512) {
   });
 }
 
+/**
+ * One texture that carries the surface detail for every part of a man.
+ * Fifty rowers are drawn in a single pass, so branching to a different sampler
+ * per body part would cost three fetches on every fragment. Instead the three
+ * height fields are packed into three channels of one map and the shader picks
+ * a channel:
+ *
+ *   R — skin: pores, fine crepe, the folds a working back creases into
+ *   G — cloth: plain weave with hand-spun slubs, coarser than the sail
+ *   B — hair: fibre strands running along V, clumping into locks
+ *
+ * The values are heights around 0.5, so the shader can both perturb the normal
+ * (by screen-space derivative) and modulate albedo from the same fetch.
+ */
+export function crewDetailTexture(size = 512) {
+  return memo('crewdetail' + size, () => {
+    return texFromCanvas(rgbCanvas(size, (x, y, u, v) => {
+      // --- R: skin
+      const pores = nz.worley(u, v, 96, 4);
+      const poreDip = Math.pow(Math.max(0, 1 - pores.f1 * 5.5), 2);
+      const crepe = torus(u, v, 230, 2, 6);
+      const folds = torus(u, v, 14, 4, 41);
+      const R = 0.55 - poreDip * 0.30 + crepe * 0.07 + folds * 0.11;
+
+      // --- G: cloth. A coarser weave than the sail's — this is body linen and
+      // undyed wool, spun on the thigh, not loom-finished sailcloth.
+      const threads = 96;
+      const tx = u * threads, ty = v * threads;
+      const cx = Math.floor(tx), cy = Math.floor(ty);
+      const fx = tx - cx, fy = ty - cy;
+      const over = ((cx + cy) & 1) === 0;
+      const wobX = (hash2(cx, 0, 13) - 0.5) * 0.30;
+      const wobY = (hash2(0, cy, 29) - 0.5) * 0.30;
+      const rx = Math.sin(Math.PI * Math.min(1, Math.max(0, fx + wobX)));
+      const ry = Math.sin(Math.PI * Math.min(1, Math.max(0, fy + wobY)));
+      let G = (over ? rx * 0.80 + ry * 0.34 : ry * 0.80 + rx * 0.34) * 0.5 + 0.28;
+      G += Math.pow(Math.max(0, torus(u, v, 22, 3, 71)), 3) * 0.5;   // slubs
+      G += torus(u, v, 3.4, 4, 205) * 0.12;                          // creases
+
+      // --- B: hair. Strands run along V and gather into locks.
+      const strand = Math.abs(Math.sin((u * 260 + torus(u, v, 6, 3, 5) * 6.0) * Math.PI));
+      const lock = Math.abs(Math.sin((u * 26 + torus(u, v, 3, 3, 15) * 2.4) * Math.PI));
+      const B = 0.34 + Math.pow(strand, 1.6) * 0.36 + Math.pow(lock, 3.0) * 0.30;
+
+      return [R, G, B];
+    }));
+  });
+}
+
 // ---------------------------------------------------------------------------
 // One-off painted textures
 // ---------------------------------------------------------------------------
