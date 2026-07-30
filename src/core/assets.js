@@ -331,4 +331,42 @@ export const MANIFEST = [
     tier: 1,                // met at ~0.6 m, half the head distance
     lodDistances: [0, 1.6, 5],
   },
+
+  // -------------------------------------------------------------------------
+  // AUTHORED DECK FITTINGS
+  //
+  // Eight ids, eight files, one material and one texture set each. That is
+  // deliberate and it is driven by the CONSUMER: applyAuthoredFittings() in
+  // src/world/ship.js swaps authored gear in by looking up assets.has(id) /
+  // assets.instance(id) for each placement id, so every id below has to be a
+  // top-level manifest entry or nothing swaps. It also builds one
+  // InstancedMesh per id regardless, so packing these into one atlas would
+  // save no draw calls while costing eight GPU copies of the atlas --
+  // AssetLibrary.load() does not dedupe by URL. tools/blender/fitting_form.py
+  // carries the full argument.
+  //
+  // Every one is PIVOT.BASE with its origin at base centre on Z=0 in Blender,
+  // matching toBase() in fittings.js, so the placement matrices that were
+  // measured against the procedural gear need no adjustment.
+  //
+  // NOT PRESENT: deadeye. It has no entry in the GEAR table and so no
+  // placements, and a three-holed deadeye set up with a lanyard is a
+  // medieval-to-early-modern fitting that CHECKLIST.md H rejects outright.
+  { id: 'cleat',        url: '/assets/cleat.glb',        pivot: PIVOT.BASE,
+    texel: 1024, tier: 1, lodDistances: [0, 3, 9] },
+  { id: 'thole_pin',    url: '/assets/thole_pin.glb',    pivot: PIVOT.BASE,
+    texel: 1024, tier: 1, lodDistances: [0, 3, 9] },
+  { id: 'bucket',       url: '/assets/bucket.glb',       pivot: PIVOT.BASE,
+    texel: 1024, tier: 1, lodDistances: [0, 3, 10] },
+  { id: 'bailer',       url: '/assets/bailer.glb',       pivot: PIVOT.BASE,
+    texel: 1024, tier: 1, lodDistances: [0, 3, 10] },
+  // the oar is 4.9 m, so it is still readable a long way off and switches late
+  { id: 'oar_spare',    url: '/assets/oar_spare.glb',    pivot: PIVOT.BASE,
+    texel: 1024, tier: 1, lodDistances: [0, 7, 20] },
+  { id: 'block_sheave', url: '/assets/block_sheave.glb', pivot: PIVOT.BASE,
+    texel: 1024, tier: 1, lodDistances: [0, 3, 9] },
+  { id: 'rope_coil_lg', url: '/assets/rope_coil_lg.glb', pivot: PIVOT.BASE,
+    texel: 1024, tier: 1, lodDistances: [0, 4, 12] },
+  { id: 'rope_coil_sm', url: '/assets/rope_coil_sm.glb', pivot: PIVOT.BASE,
+    texel: 1024, tier: 1, lodDistances: [0, 4, 12] },
 ];
