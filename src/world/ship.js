@@ -17,11 +17,16 @@
 // ---------------------------------------------------------------------------
 
 import * as THREE from 'three';
-import { loft, tube, revolve, timber, mergeGeometries, xform, trs } from './geo.js';
+import {
+  loft, otube as tube, orevolve as revolve, timber,
+  mergeGeometries, mergeAttributed, flipFaces, xform, trs,
+} from './geo.js';
 import {
   woodMaterial, bronzeMaterial, linenMaterial, ropeMaterial,
-  prowEyeTexture, terracottaMaterial,
+  prowEyeTexture, terracottaMaterial, stoneMaterial,
+  albedoCanvas, normalFromHeight, fieldToCanvas, texFromCanvas,
 } from '../core/textures.js';
+import { GEAR, lcg, ropeTurns, tholeGrommet, chestLashing, bundleLashing, bucketBail } from './fittings.js';
 
 export const SHIP = {
   length: 31.0,        // overall
@@ -101,6 +106,198 @@ function setRepeat(maps, x, y) {
   for (const k of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap']) {
     if (maps[k]) { maps[k].repeat.set(x, y); maps[k].needsUpdate = true; }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Interior light.
+//
+// The rowing well is a 31 m open trough roofed only by the sky. Three's
+// hemisphere light and the environment probe both light it as though it were
+// standing in the open, and the shadow map takes the sun away — so the well
+// ends up reading as a black pit, which is exactly what it is NOT. What is
+// missing is the bounce: skylight falling down through the open deck, plus a
+// large amount of light coming back up off the water and in under the gunwale,
+// scattering around pale unpitched planking.
+//
+// Rather than raise ambient globally (which flattens the whole ship, and the
+// global values are tuned), that bounce is baked per vertex as a single float
+// — how much of the opening this point can see — and added as an extra
+// irradiance term. It costs one attribute, one varying and three instructions,
+// and nothing at all per frame beyond writing one colour uniform.
+// ---------------------------------------------------------------------------
+
+const BOUNCE = { value: new THREE.Color(0, 0, 0) };
+
+/**
+ * Wrap a standard material so it takes the baked interior light and the
+ * per-vertex wear tint.
+ *
+ * aBake carries two things, and both are needed:
+ *
+ *  .x  sky visibility, used to OCCLUDE the indirect light. Three's hemisphere
+ *      light and the environment probe both light the bilge of a closed hull
+ *      exactly as brightly as they light the masthead, and measured on this
+ *      scene that unoccluded indirect term is about three quarters of
+ *      everything the interior receives. Without a baked occlusion the well is
+ *      a uniformly lit trough with no depth in it at all.
+ *
+ *  .y  bounce weight, used to ADD the light that is genuinely coming back off
+ *      the water and off the pale planking, which nothing in the scene
+ *      supplies.
+ *
+ * Exterior geometry writes (1, 0) and is left exactly as it was. Works
+ * per-vertex or per-instance, which is what lets an InstancedMesh of authored
+ * props be lit by the same term.
+ */
+function bakedMaterial(mat, vertexColors = true) {
+  mat.vertexColors = vertexColors;
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uBounce = BOUNCE;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>',
+        '#include <common>\nattribute vec2 aBake;\nvarying vec2 vBake;')
+      .replace('#include <begin_vertex>',
+        '#include <begin_vertex>\n\tvBake = aBake;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>',
+        '#include <common>\nuniform vec3 uBounce;\nvarying vec2 vBake;')
+      .replace('#include <lights_fragment_end>',
+        '#include <lights_fragment_end>\n' +
+        '\tfloat nostosOcc = mix( 0.22, 1.0, vBake.x );\n' +
+        '\treflectedLight.indirectDiffuse *= nostosOcc;\n' +
+        '\treflectedLight.indirectSpecular *= nostosOcc;\n' +
+        '\treflectedLight.indirectDiffuse += uBounce * vBake.y * ' +
+        'BRDF_Lambert( material.diffuseColor );');
+  };
+  // Every baked material shares one program variant; without this three would
+  // treat the patched source as identical to the unpatched one and hand back a
+  // cached program compiled from the wrong strings.
+  mat.customProgramCacheKey = () => 'nostos-baked';
+  return mat;
+}
+
+/**
+ * Write the baked interior light. fn(x, y, z, ny) returns sky visibility 0..1,
+ * or a negative number to mark the vertex as being outboard, where the scene's
+ * own lighting is already correct and must not be touched.
+ */
+function applyBake(geom, fn) {
+  const p = geom.attributes.position, n = geom.attributes.normal;
+  const a = new Float32Array(p.count * 2);
+  for (let i = 0; i < p.count; i++) {
+    const v = fn(p.getX(i), p.getY(i), p.getZ(i), n ? n.getY(i) : 0);
+    if (v < 0) { a[i * 2] = 1; a[i * 2 + 1] = 0; }
+    else { const c = v > 1 ? 1 : v; a[i * 2] = c; a[i * 2 + 1] = c; }
+  }
+  geom.setAttribute('aBake', new THREE.BufferAttribute(a, 2));
+  return geom;
+}
+
+/** Write the per-vertex wear tint. fn(x, y, z, ny) -> [r,g,b] */
+function applyTint(geom, fn) {
+  const p = geom.attributes.position, n = geom.attributes.normal;
+  const a = new Float32Array(p.count * 3);
+  for (let i = 0; i < p.count; i++) {
+    const c = fn(p.getX(i), p.getY(i), p.getZ(i), n ? n.getY(i) : 0);
+    a[i * 3] = c[0]; a[i * 3 + 1] = c[1]; a[i * 3 + 2] = c[2];
+  }
+  geom.setAttribute('color', new THREE.BufferAttribute(a, 3));
+  return geom;
+}
+
+const MERGE_ATTRS = {
+  aBake: { size: 2, fill: [1, 0] },
+  color: { size: 3, fill: 1 },
+};
+
+/**
+ * Inboard planking, authored here rather than borrowed from the deck.
+ *
+ * The shared deck wood is right for a two-metre plank seen from above: strong
+ * growth rings, hard seams, high contrast. The inside of the hull is a single
+ * fifteen-metre surface that the player sees end-on down its own length, and
+ * at that angle the deck texture turns into a bank of stripes. This one is
+ * built for the job: broad flush strakes, a thin caulk line rather than a
+ * shadowed gap, quiet grain, and streaks running down from the sheer where the
+ * rain and the spray have been running for years.
+ *
+ * One tile spans four strakes across and about two metres along.
+ */
+let _innerPlankMaps = null;
+function innerPlankMaps(size = 1024) {
+  if (_innerPlankMaps) return _innerPlankMaps;
+  const H = new Float32Array(size * size);
+  const S = new Float32Array(size * size);   // stain / damp streaking
+  const PLANKS = 4;
+  const fract = (x) => x - Math.floor(x);
+  const wob = (a, b) => Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+  const rnd = (a, b) => fract(Math.abs(wob(a, b)));
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = y * size + x;
+      const u = x / size, v = y / size;
+
+      const pf = u * PLANKS;
+      const pi = Math.floor(pf);
+      const inP = pf - pi;                          // 0..1 across the strake
+      const seam = Math.min(inP, 1 - inP);
+      // carvel: the strakes are flush, so the seam is a line of caulk, not a
+      // valley. Narrow, and only slightly recessed.
+      const caulk = 1 - Math.exp(-seam * 190);
+      const jig = rnd(pi, 3) - 0.5;
+
+      // grain: low-contrast, stretched hard along the plank
+      const g1 = Math.sin((u * PLANKS * 7.3 + jig * 3.0 + Math.sin(v * 4.1 + pi) * 0.55) * Math.PI);
+      const g2 = Math.sin((u * PLANKS * 19.0 + jig * 8.0 + Math.sin(v * 9.3) * 0.4) * Math.PI);
+      const grain = 0.5 + 0.30 * g1 + 0.12 * g2;
+
+      // adze marks across the face, and the odd split
+      const adze = Math.sin(v * 140 + pi * 2.0) * Math.sin(u * PLANKS * 3.0) * 0.06;
+      const split = Math.pow(Math.max(0, Math.sin((u * PLANKS * 11.0 + 0.3) * Math.PI)), 26) * 0.35;
+
+      // vertical wash: dirt and damp run DOWN the planking, i.e. across it
+      const wash = 0.5 + 0.5 * Math.sin(u * PLANKS * 2.3 + Math.sin(v * 2.0) * 1.4)
+        * Math.sin(u * PLANKS * 5.7 + 1.1);
+
+      // streaks running down the planking, plus tide lines along it
+      const drip = Math.pow(Math.max(0, Math.sin((u * PLANKS * 3.7 + rnd(pi, 5) * 3.0) * Math.PI)), 3.0)
+        * (0.35 + 0.65 * Math.max(0, Math.sin(v * 1.9 + pi)));
+      const tide = Math.pow(Math.max(0, Math.sin(v * 6.3 + Math.sin(u * 9.0) * 0.8)), 8.0) * 0.5;
+
+      H[i] = 0.80 + grain * 0.10 + adze - split - (1 - caulk) * 0.16;
+      S[i] = Math.max(0, Math.min(1,
+        wash * 0.55 + drip * 0.45 + tide * 0.3 + (1 - caulk) * 0.45 + split * 0.6));
+    }
+  }
+
+  const albedo = albedoCanvas(size, (x, y) => {
+    const i = y * size + x;
+    // Bleached pine, kept reasonably high — this surface is the rowing well's
+    // only reflector — but nowhere near white: it has been wet, walked on and
+    // bailed over for years and no two strakes came off the same log.
+    const pale = [0.415, 0.378, 0.298];
+    const dirty = [0.185, 0.158, 0.122];
+    const t = Math.pow(S[i], 1.15) * 0.92;
+    const pi = Math.floor((x / size) * PLANKS);
+    const tone = 0.86 + rnd(pi, 11) * 0.30;         // strake to strake
+    const k = (0.84 + H[i] * 0.24) * tone;
+    return [
+      (pale[0] * (1 - t) + dirty[0] * t) * k,
+      (pale[1] * (1 - t) + dirty[1] * t) * k,
+      (pale[2] * (1 - t) + dirty[2] * t) * k,
+    ];
+  });
+
+  const rough = new Float32Array(size * size);
+  for (let i = 0; i < rough.length; i++) rough[i] = 0.70 + (1 - H[i]) * 0.22 + S[i] * 0.06;
+
+  _innerPlankMaps = {
+    map: texFromCanvas(albedo, { srgb: true }),
+    normalMap: texFromCanvas(normalFromHeight(H, size, 1.5)),
+    roughnessMap: texFromCanvas(fieldToCanvas(rough, size)),
+  };
+  return _innerPlankMaps;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +453,114 @@ export function buildShip(quality = 'high') {
 
   const clothMaps = linenMaterial(quality === 'low' ? 512 : 1024, 1.0);
 
+  // --- interior surfaces -------------------------------------------------
+  // Inside the hull nothing is tarred. Pitch goes on the outside, below the
+  // wale, where the sea is; the inboard face of the planking is bare pine that
+  // has been rained on, walked on and bailed over for years, and it is pale.
+  // It is also the only reflector the rowing well has, so its albedo is doing
+  // real lighting work, not just decoration.
+  const innerMaps = innerPlankMaps(quality === 'low' ? 512 : 1024);
+  const innerMat = bakedMaterial(new THREE.MeshStandardMaterial({
+    map: innerMaps.map,
+    normalMap: innerMaps.normalMap,
+    roughnessMap: innerMaps.roughnessMap,
+    // Carvel planking is flush: the seams are caulk lines, not the ribbed
+    // shadow a heavy normal map turns them into.
+    normalScale: new THREE.Vector2(0.55, 0.55),
+    color: 0xffffff, roughness: 1.0, metalness: 0.0,
+  }));
+
+  // Everything structural that shows on both sides of the planking — frames,
+  // clamps, rail, cleats, thole pins. Baked, so the inboard half of it lifts
+  // with the well and the outboard half does not.
+  const structMaps = woodMaterial('mast', 512);
+  setRepeat(structMaps, 1, 6);
+  const structMat = bakedMaterial(stdMaterial(structMaps, { color: 0xa8a08c }));
+
+  // clutter buckets
+  const pineMat = bakedMaterial(stdMaterial(woodMaterial('deck', 512), { color: 0x9c9078 }));
+  const gearRopeMat = bakedMaterial(stdMaterial(ropeMaterial(256), { color: 0x9d8560 }));
+  // The shared terracotta map is a pale tan; fired Attic clay in the round is
+  // a good deal warmer and darker than that, and in full sun the pale version
+  // reads as bone.
+  const gearTerraMat = bakedMaterial(stdMaterial(terracottaMaterial(512, false),
+    { color: 0xd8c0b0 }));
+  const gearStoneMat = bakedMaterial(stdMaterial(stoneMaterial(512, 'limestone'), { color: 0x8f8a7e }));
+  const gearClothMat = bakedMaterial(stdMaterial(linenMaterial(512, 1.0), { color: 0xc4b79c }));
+  const MAT_BY_KEY = {
+    pine: pineMat, rope: gearRopeMat, terra: gearTerraMat,
+    stone: gearStoneMat, cloth: gearClothMat,
+  };
+
+  const DECK_Y = 0.30;                     // working deck height above waterline
+  const GANG_Y = DECK_Y + 0.505;
+  // Foot reference in the forward hold. It sits below the boards on purpose —
+  // see the hold section for why.
+  const HOLD_Y = -0.12;
+
+  /** Inverse of section(): the half-width of the hull at station u, height y. */
+  function widthAt(u, y) {
+    const b = beamAt(u), yb = keelAt(u), ys = sheerAt(u);
+    const sharp = Math.min(1, Math.pow(Math.abs(u), 1.9));
+    const ex = 1.0 + sharp * 1.05, ey = 1.0 + sharp * 0.55;
+    const t = THREE.MathUtils.clamp((y - yb) / (ys - yb), 0, 1);
+    const c = Math.pow(Math.max(0, 1 - t), 1 / ey);
+    const th = Math.acos(THREE.MathUtils.clamp(c, -1, 1));
+    return b * Math.pow(Math.sin(th), ex);
+  }
+
+  /**
+   * How much of the open deck a point inside the hull can see, 0..1. This is a
+   * cheap analytic ambient-occlusion of a long trough: the angular width of the
+   * opening from the point, closed down by the catwalk overhead and by the
+   * raised decks at each end.
+   */
+  function skyBake(x, y, z, ny) {
+    const u = THREE.MathUtils.clamp(z / SHIP.halfLen, -1, 1);
+    const b = beamAt(u), ys = sheerAt(u);
+    const ax = Math.abs(x);
+    const d = Math.max(0.05, ys - y);
+    // angular half-widths to each gunwale, normalised to a flat-sky hemisphere
+    let s = (Math.atan2(b - ax, d) + Math.atan2(b + ax, d)) / Math.PI;
+    s = THREE.MathUtils.clamp(s, 0, 1);
+    // above the sheer there is nothing overhead at all
+    if (y > ys - 0.02) s = 1;
+    // the catwalk roofs the middle of the well, and the benches shade the rest
+    if (y < DECK_Y + 0.44) {
+      if (ax < 0.60) s *= 0.26;
+      else if (ax < 1.00) s *= 0.55;
+      else s *= 0.86;
+    }
+    // fore and aft decks close their ends over
+    if (z > 11.0) s *= 0.16;
+    else if (z > 10.0) s *= 0.16 + (11.0 - z) * 0.84;
+    if (z < -11.0) s *= 0.18;
+    else if (z < -10.0) s *= 0.18 + (z + 11.0) * 0.82;
+    // the hatch is the only hole in the fore deck, and everything under it is
+    // lit by that one shaft and nothing else
+    if (y < DECK_Y + 0.30 && z > 9.4 && z < 13.2) {
+      s += 0.42 * Math.exp(-(Math.pow((z - 11.0) / 1.35, 2) + Math.pow(x / 0.95, 2)));
+    }
+    // an up-facing surface sees the opening; a down-facing one only sees what
+    // the planking and the water have already thrown back at it
+    s *= 0.44 + 0.56 * Math.max(0, ny);
+    return s;
+  }
+
+  /** Marks a vertex as outboard: lit exactly as the scene lit it before. */
+  const noBake = () => -1;
+
+  /**
+   * Weathering, written per vertex. Two things are always true of a working
+   * deck: the up-faces are bleached to grey by sun and salt, and wherever feet
+   * or hands or rope go, the wood is darker and smoother than around it.
+   */
+  function saltTint(ny, k = 1) {
+    const up = Math.pow(Math.max(0, ny), 1.6) * k;
+    return [1 + up * 0.30, 1 + up * 0.30, 1 + up * 0.34];
+  }
+  function mulTint(a, m) { return [a[0] * m[0], a[1] * m[1], a[2] * m[2]]; }
+
   // ==========================================================================
   // HULL
   // ==========================================================================
@@ -284,19 +589,62 @@ export function buildShip(quality = 'high') {
     inner.push(inRing);
   }
 
-  const hullOuter = loft(outer, { closed: false, uvScale: new THREE.Vector2(1, 1) });
-  const hullInner = loft(inner, { closed: false, uvScale: new THREE.Vector2(1, 1), flip: true });
+  // Winding: loft() emits its first triangle as (j, j+1, i+1), and with these
+  // rings running starboard-gunwale -> keel -> port-gunwale that faces INBOARD.
+  // So the shell that is meant to be seen from outside is the flipped one, and
+  // the inner skin is not. Getting this backwards is invisible from the deck of
+  // a passing ship and total from inside it: every interior surface is culled,
+  // the rowing well has no walls, and what fills it is the ocean plane cutting
+  // through the hull at the waterline.
+  const hullOuter = loft(outer, { closed: false, uvScale: new THREE.Vector2(1, 1), flip: true });
+  const hullInner = loft(inner, { closed: false, uvScale: new THREE.Vector2(1, 1) });
 
   const hullMesh = new THREE.Mesh(hullOuter, hullMat);
   hullMesh.castShadow = true; hullMesh.receiveShadow = true;
   root.add(hullMesh);
 
-  const innerMesh = new THREE.Mesh(hullInner, hullMat);
+  // loft() normalises its U coordinate per station, so at the bow — where the
+  // girth of a section collapses to almost nothing — the same 0..1 is squeezed
+  // into a few centimetres and the planking texture turns into a radial zebra.
+  // Re-lay the UVs in metres instead, so a strake is a strake everywhere.
+  {
+    const uv = hullInner.attributes.uv;
+    const rows = inner.length, cols = inner[0].length;
+    for (let i = 0; i < rows; i++) {
+      let g = 0;
+      for (let j = 0; j < cols; j++) {
+        if (j > 0) g += inner[i][j].distanceTo(inner[i][j - 1]);
+        uv.setXY(i * cols + j, g * 0.62, inner[i][0].z * 0.50);
+      }
+    }
+    uv.needsUpdate = true;
+  }
+
+  // The inboard face of the planking. Bright, baked, and tinted: a wet dark
+  // band down in the bilge where the water always is, salt bleaching up under
+  // the gunwale, and a scuff line where fifty men put their feet.
+  applyBake(hullInner, (x, y, z, ny) => skyBake(x, y, z, ny));
+  applyTint(hullInner, (x, y, z, ny) => {
+    const u = THREE.MathUtils.clamp(z / SHIP.halfLen, -1, 1);
+    const yk = keelAt(u), ys = sheerAt(u);
+    const t = THREE.MathUtils.clamp((y - yk) / (ys - yk), 0, 1);
+    // bilge: permanently damp, stained dark
+    const wet = 1 - THREE.MathUtils.smoothstep(t, 0.06, 0.30);
+    // sun-bleached band in the top third, which is all the sun ever reaches
+    const sun = THREE.MathUtils.smoothstep(t, 0.62, 0.97);
+    const scuff = Math.exp(-Math.pow((t - 0.46) / 0.07, 2)) * 0.18;
+    const k = 1 - wet * 0.52 + sun * 0.10 - scuff;
+    return [k * (1 - wet * 0.06), k * (1 - wet * 0.02), k * (1 + sun * 0.05)];
+  });
+  const innerMesh = new THREE.Mesh(hullInner, innerMat);
   innerMesh.castShadow = false; innerMesh.receiveShadow = true;
   root.add(innerMesh);
 
   // --- pitched topsides: a separate shell just proud of the hull below the
-  // wale, so the black is a coating rather than a texture swap
+  // wale, so the black is a coating rather than a texture swap. It is built
+  // here but not attached until the end, so the pitch payed into the deck
+  // seams can share its draw call.
+  let pitchShell = null;
   {
     const secs = [];
     for (let i = 0; i <= NZ; i++) {
@@ -318,17 +666,32 @@ export function buildShip(quality = 'high') {
       }
       secs.push(ring);
     }
-    const g = loft(secs, { uvScale: new THREE.Vector2(1, 1) });
-    const m = new THREE.Mesh(g, pitchMat);
-    m.castShadow = true; m.receiveShadow = true;
-    root.add(m);
+    pitchShell = loft(secs, { uvScale: new THREE.Vector2(1, 1), flip: true });
   }
 
   // ==========================================================================
   // STRUCTURE — wales, rail, stem and stern posts
   // ==========================================================================
 
+  // Merge buckets for everything stowed aboard, one per material. Five extra
+  // draw calls buys the whole contents of the ship.
+  const gearStone = [], gearTerra = [], gearRope = [], gearPine = [], gearCloth = [];
+  const GEAR_BUCKET = {
+    stone: gearStone, terra: gearTerra, rope: gearRope,
+    pine: gearPine, cloth: gearCloth,
+  };
+  // which swappable id each merged part came from, so the bucket can be
+  // re-merged without the pieces an authored GLB has taken over
+  const GEAR_IDS = { stone: [], terra: [], rope: [], pine: [], cloth: [] };
+  /** Every authored-asset-swappable placement, recorded as id + matrix. */
+  const placements = [];
+
   const woodParts = [];
+  const flat = () => [1, 1, 1];
+  /** Push a timber, with its bounce and its weathering already written in. */
+  function addWood(g, bake = noBake, tint = flat) {
+    applyBake(g, bake); applyTint(g, tint); woodParts.push(g); return g;
+  }
 
   // --- wales: heavy longitudinal timbers, the strongest visual line on the hull
   for (const side of [1, -1]) {
@@ -340,11 +703,15 @@ export function buildShip(quality = 'high') {
         const b = beamAt(u), ys = sheerAt(u);
         path.push(new THREE.Vector3(side * (b + 0.028), ys - drop, z));
       }
-      woodParts.push(tube(path, rad, 6, { steps: 60 }));
+      addWood(tube(path, rad, 6, { steps: 60 }), noBake,
+        (x, y, z, ny) => saltTint(ny, 0.7));
     }
   }
 
   // --- gunwale cap rail
+  // This is the one piece of the ship every hand aboard takes hold of, so it
+  // is bleached white on top, worn dark on the inboard curve where palms go,
+  // and its underside is lit only by what comes back off the water.
   for (const side of [1, -1]) {
     const path = [];
     for (let i = 0; i <= 30; i++) {
@@ -352,7 +719,36 @@ export function buildShip(quality = 'high') {
       const z = u * SHIP.halfLen;
       path.push(new THREE.Vector3(side * (beamAt(u) + 0.01), sheerAt(u) + 0.035, z));
     }
-    woodParts.push(tube(path, 0.062, 7, { steps: 64 }));
+    addWood(tube(path, 0.062, 10, { steps: 72, uvScale: new THREE.Vector2(1, 40) }),
+      (x, y, z, ny) => 0.16 + 0.62 * Math.max(0, -ny),
+      (x, y, z, ny) => {
+        // hands fall in clusters: at the shrouds, at the cleats, at the ends
+        const hand = Math.exp(-Math.pow((z - 3.4) / 1.5, 2))
+          + Math.exp(-Math.pow((z + 3.1) / 1.6, 2))
+          + Math.exp(-Math.pow((z - 9.6) / 1.3, 2))
+          + Math.exp(-Math.pow((z + 9.2) / 1.4, 2));
+        const polish = Math.min(1, hand) * Math.max(0, 0.55 - ny) * 0.62;
+        return mulTint(saltTint(ny, 1.25), [1 - polish * 0.30, 1 - polish * 0.33, 1 - polish * 0.38]);
+      });
+  }
+
+  // --- the clamp: the longitudinal timber inside the planking that the thwart
+  // ends land on. Structurally it is what stops a long hull hogging; visually
+  // it is the line that tells you the inside of the ship has a shape, and the
+  // shelf everything on deck is belayed to.
+  for (const side of [1, -1]) {
+    for (const [drop, rad] of [[0.20, 0.058], [0.82, 0.040]]) {
+      const path = [];
+      for (let i = 0; i <= 30; i++) {
+        const u = -0.93 + (1.86 * i) / 30;
+        const z = u * SHIP.halfLen;
+        const ys = sheerAt(u), y = ys - drop;
+        path.push(new THREE.Vector3(side * (widthAt(u, y) - rad * 0.9), y, z));
+      }
+      addWood(tube(path, rad, 7, { steps: 64, uvScale: new THREE.Vector2(1, 34) }),
+        (x, y, z, ny) => Math.min(1, skyBake(x, y, z, ny) * 1.25),
+        (x, y, z, ny) => saltTint(ny, 0.5));
+    }
   }
 
   // --- stem: rises from the forefoot, then curves back over the bow
@@ -365,7 +761,8 @@ export function buildShip(quality = 'high') {
       new THREE.Vector3(0, sheerAt(1.0) + 1.05, 12.55),
       new THREE.Vector3(0, sheerAt(1.0) + 1.42, 11.85),
     ];
-    woodParts.push(tube(stem, (t) => 0.135 - t * 0.055, 8, { steps: 44 }));
+    addWood(tube(stem, (t) => 0.135 - t * 0.055, 8, { steps: 44 }), noBake,
+      (x, y, z, ny) => saltTint(ny, 1.1));
 
     // the ram: it grows out of the keel timber and projects forward at the
     // waterline, where it can open a seam in another hull
@@ -375,7 +772,7 @@ export function buildShip(quality = 'high') {
       new THREE.Vector3(0, -0.34, 15.6),
       new THREE.Vector3(0, -0.30, 16.5),
     ];
-    woodParts.push(tube(foot, (t) => 0.19 - t * 0.055, 8, { steps: 26 }));
+    addWood(tube(foot, (t) => 0.19 - t * 0.055, 8, { steps: 26 }));
   }
 
   // --- sternpost: the aphlaston, curving up and inboard over the helmsman
@@ -388,7 +785,8 @@ export function buildShip(quality = 'high') {
       new THREE.Vector3(0, sheerAt(-1.0) + 2.45, -11.6),
       new THREE.Vector3(0, sheerAt(-1.0) + 2.72, -10.75),
     ];
-    woodParts.push(tube(sp, (t) => 0.14 - t * 0.062, 8, { steps: 46 }));
+    addWood(tube(sp, (t) => 0.14 - t * 0.062, 8, { steps: 46 }), noBake,
+      (x, y, z, ny) => saltTint(ny, 1.1));
     // the fan finial
     for (let k = -1; k <= 1; k++) {
       const f = [
@@ -396,7 +794,7 @@ export function buildShip(quality = 'high') {
         new THREE.Vector3(k * 0.22, sheerAt(-1.0) + 3.05, -10.9),
         new THREE.Vector3(k * 0.34, sheerAt(-1.0) + 3.42, -10.35),
       ];
-      woodParts.push(tube(f, 0.036, 5, { steps: 14 }));
+      addWood(tube(f, 0.036, 5, { steps: 14 }), noBake, (x, y, z, ny) => saltTint(ny, 1.1));
     }
   }
 
@@ -405,6 +803,10 @@ export function buildShip(quality = 'high') {
   // ==========================================================================
 
   const deckParts = [];
+  const tarParts = [];         // pitch payed into the seams, merged with the topsides
+  function addDeck(g, bake = noBake, tint = flat) {
+    applyBake(g, bake); applyTint(g, tint); deckParts.push(g); return g;
+  }
 
   /** Deck planking laid between the sheer at a range of stations. */
   function deckPanel(u0, u1, y, inset = 0.10) {
@@ -422,27 +824,101 @@ export function buildShip(quality = 'high') {
         new THREE.Vector3(b, yy, z),
       ]);
     }
-    return loft(secs, { uvScale: new THREE.Vector2(1.2, 5) });
+    // flip, for the same reason the hull needed it: with j running +X and i
+    // running +Z the unflipped winding faces the sea floor, and the fore and
+    // aft decks are culled from the only side anyone ever stands on.
+    return loft(secs, { uvScale: new THREE.Vector2(1.2, 5), flip: true });
   }
 
-  const DECK_Y = 0.30;                     // working deck height above waterline
   // fore deck
-  deckParts.push(deckPanel(0.74, 0.955, (u) => DECK_Y + 0.55 + Math.pow(u, 4) * 0.55));
+  addDeck(deckPanel(0.74, 0.955, (u) => DECK_Y + 0.55 + Math.pow(u, 4) * 0.55),
+    noBake, (x, y, z, ny) => saltTint(ny, 1.1));
   // aft deck — the helmsman's platform
-  deckParts.push(deckPanel(-0.955, -0.74, (u) => DECK_Y + 0.62 + Math.pow(-u, 4) * 0.70));
-  // central gangway running between the rowing benches
+  addDeck(deckPanel(-0.955, -0.74, (u) => DECK_Y + 0.62 + Math.pow(-u, 4) * 0.70),
+    noBake, (x, y, z, ny) => {
+      // the helmsman stands in one place for hours and his feet say so
+      const feet = Math.exp(-(Math.pow((z + 12.3) / 0.9, 2) + Math.pow((Math.abs(x) - 0.8) / 0.5, 2)));
+      return mulTint(saltTint(ny, 1.1), [1 - feet * 0.30, 1 - feet * 0.31, 1 - feet * 0.34]);
+    });
+
+  // --- the catwalk.
+  // This is the one surface in the game the player looks at from 0.5 m for
+  // hours, so it is not a strip: it is five separate planks with the seams
+  // payed with pitch between them, foot battens across, and the whole thing
+  // walked to a dark polish down the middle and bleached grey at the edges.
   {
-    const secs = [];
-    for (let i = 0; i <= 26; i++) {
-      const u = -0.75 + 1.50 * (i / 26);
-      const z = u * SHIP.halfLen;
-      secs.push([
-        new THREE.Vector3(-0.52, DECK_Y + 0.50, z),
-        new THREE.Vector3(0, DECK_Y + 0.505, z),
-        new THREE.Vector3(0.52, DECK_Y + 0.50, z),
-      ]);
+    const GZ0 = -11.62, GZ1 = 11.52, NROW = 46;
+    const PW = 0.196, GAP = 0.016;
+    const centres = [-2, -1, 0, 1, 2].map((k) => k * (PW + GAP));
+    const gangTint = (x, y, z, ny) => {
+      const tread = Math.exp(-Math.pow(x / 0.30, 2));         // where feet fall
+      const edge = THREE.MathUtils.smoothstep(Math.abs(x), 0.30, 0.52);
+      // long-run streaks so the polish is not a perfect airbrushed band
+      const streak = 0.5 + 0.5 * Math.sin(z * 1.7 + x * 9.0) * Math.sin(z * 0.43 + 1.1);
+      const wear = tread * (0.62 + streak * 0.38) * Math.max(0, ny);
+      const salt = saltTint(ny, 0.55 + edge * 1.1);
+      return mulTint(salt, [1 - wear * 0.30, 1 - wear * 0.325, 1 - wear * 0.365]);
+    };
+    for (let pi = 0; pi < centres.length; pi++) {
+      const cx = centres[pi];
+      const hw = PW * 0.5;
+      const secs = [];
+      for (let i = 0; i <= NROW; i++) {
+        const t = i / NROW;
+        const z = GZ0 + (GZ1 - GZ0) * t;
+        // each plank sits a hair proud or shy of its neighbour, and the whole
+        // walkway is cambered so water runs off it
+        const camber = -Math.pow(cx / 0.55, 2) * 0.012;
+        const cup = Math.sin(z * 0.7 + pi * 2.1) * 0.0045 + Math.sin(z * 2.3 + pi) * 0.0022;
+        const yTop = GANG_Y + camber + cup + (pi === 2 ? 0.004 : 0);
+        const yBot = yTop - 0.052;
+        secs.push([
+          new THREE.Vector3(cx - hw, yTop, z),
+          new THREE.Vector3(cx + hw, yTop, z),
+          new THREE.Vector3(cx + hw * 0.92, yBot, z),
+          new THREE.Vector3(cx - hw * 0.92, yBot, z),
+        ]);
+      }
+      addDeck(loft(secs, { closed: true, flip: true, uvScale: new THREE.Vector2(0.35, 12) }),
+        (x, y, z, ny) => 0.10 + 0.55 * Math.max(0, -ny), gangTint);
     }
-    deckParts.push(loft(secs, { uvScale: new THREE.Vector2(0.6, 8) }));
+    // pitch in the seams, oozing slightly proud in the sun
+    for (let k = 0; k < 4; k++) {
+      const sx = (centres[k] + centres[k + 1]) * 0.5;
+      const path = [];
+      for (let i = 0; i <= 30; i++) {
+        const t = i / 30, z = GZ0 + (GZ1 - GZ0) * t;
+        const camber = -Math.pow(sx / 0.55, 2) * 0.012;
+        path.push(new THREE.Vector3(sx, GANG_Y + camber - 0.006
+          + Math.sin(z * 3.1 + k) * 0.0035, z));
+      }
+      tarParts.push(tube(path, 0.013, 4, { steps: 54 }));
+    }
+    // foot battens: split strips pegged across the walk, spaced by pace
+    const rb = lcg(77);
+    for (let z = GZ0 + 0.9; z < GZ1 - 0.6; z += 1.55 + rb() * 0.55) {
+      const g = timber(1.03, 0.020, 0.052 + rb() * 0.012, 0.005, Math.floor(z * 7));
+      g.rotateY((rb() - 0.5) * 0.03);
+      addDeck(xform(g, trs(0, GANG_Y + 0.014, z)), () => 0.12,
+        (x, y, z2, ny) => mulTint(saltTint(ny, 0.9),
+          [1 - Math.max(0, ny) * 0.22, 1 - Math.max(0, ny) * 0.24, 1 - Math.max(0, ny) * 0.27]));
+    }
+    // the two bearers the catwalk is laid on. They rest across the thwarts and
+    // they are the underside you see whenever you look into the well.
+    for (const side of [1, -1]) {
+      const secs = [];
+      for (let i = 0; i <= 24; i++) {
+        const t = i / 24, z = GZ0 + (GZ1 - GZ0) * t;
+        const x0 = side * 0.40, w = 0.055;
+        const yT = GANG_Y - 0.052, yB = yT - 0.085;
+        secs.push([
+          new THREE.Vector3(x0 - w, yT, z), new THREE.Vector3(x0 + w, yT, z),
+          new THREE.Vector3(x0 + w * 0.86, yB, z), new THREE.Vector3(x0 - w * 0.86, yB, z),
+        ]);
+      }
+      addDeck(loft(secs, { closed: true, flip: true, uvScale: new THREE.Vector2(0.4, 14) }),
+        (x, y, z, ny) => 0.10 + 0.42 * Math.max(0, -ny) + 0.25 * Math.abs(x));
+    }
   }
 
   // --- thwarts (rowing benches) and the frames they sit on
@@ -457,7 +933,14 @@ export function buildShip(quality = 'high') {
     // bench spans the full beam, notched around the gangway
     for (const side of [1, -1]) {
       const g = timber(b - 0.55, 0.075, 0.32, 0.012, i + side);
-      deckParts.push(xform(g, trs(side * (b + 0.52) / 2, benchY, z)));
+      addDeck(xform(g, trs(side * (b + 0.52) / 2, benchY, z)),
+        (x, y, zz, ny) => skyBake(x, y, zz, ny),
+        (x, y, zz, ny) => {
+          // a rower's backside polishes the outboard half of his own thwart
+          const seat = Math.exp(-Math.pow((Math.abs(x) - b * 0.50) / 0.30, 2)) * Math.max(0, ny);
+          return mulTint(saltTint(ny, 0.8),
+            [1 - seat * 0.28, 1 - seat * 0.30, 1 - seat * 0.34]);
+        });
     }
     // frame ribs, visible inside the hull
     for (const side of [1, -1]) {
@@ -470,23 +953,42 @@ export function buildShip(quality = 'high') {
         const y = keelAt(u) + (ys - keelAt(u)) * (1 - Math.pow(Math.cos(th), 1 + sharp * 0.55));
         rib.push(new THREE.Vector3(side * (x - 0.055), y + 0.03, z));
       }
-      woodParts.push(tube(rib, 0.048, 5, { steps: 14 }));
+      addWood(tube(rib, 0.048, 5, { steps: 14 }),
+        (x, y, z, ny) => skyBake(x, y, z, ny));
     }
 
     for (const side of [1, -1]) {
       oarPositions.push({ side, z, y: ys + 0.02, x: side * (b + 0.05), index: i });
-      // thole pin the oar works against
-      const pin = new THREE.CylinderGeometry(0.028, 0.033, 0.20, 6);
-      woodParts.push(xform(pin, trs(side * (b + 0.02), ys + 0.12, z + 0.16)));
+      // The thole pin is what the oar actually works against, so it is the most
+      // worn thing on the ship: waisted where the loom grinds, headed to stop
+      // the grommet riding off, and never quite upright after a season.
+      const seed = 400 + i * 13 + (side > 0 ? 0 : 7);
+      const px = side * (b + 0.015), py = ys + 0.02, pz = z + 0.16;
+      const pm = trs(px, py, pz);
+      placements.push({ id: 'thole_pin', matrix: pm.clone(), seed });
+      const pin = xform(GEAR.thole_pin.make(seed), pm);
+      applyBake(pin, (x, y, zz, ny) => 0.30 + 0.30 * Math.max(0, -ny));
+      applyTint(pin, (x, y, zz, ny) => {
+        const grind = Math.exp(-Math.pow((y - (py + 0.11)) / 0.045, 2));
+        return mulTint(saltTint(ny, 1.2),
+          [1 - grind * 0.34, 1 - grind * 0.36, 1 - grind * 0.40]);
+      });
+      gearPine.push(pin); GEAR_IDS.pine.push('thole_pin');
+
+      const gro = xform(tholeGrommet(seed), trs(px, py, pz));
+      applyBake(gro, () => 0.34); applyTint(gro, flat);
+      gearRope.push(gro); GEAR_IDS.rope.push(null);
     }
   }
 
   // --- mast step and partners
   {
     const step = timber(0.62, 0.22, 1.45, 0.02, 9);
-    woodParts.push(xform(step, trs(0, keelAt(SHIP.mastZ / SHIP.halfLen) + 0.16, SHIP.mastZ)));
+    addWood(xform(step, trs(0, keelAt(SHIP.mastZ / SHIP.halfLen) + 0.16, SHIP.mastZ)),
+      (x, y, z, ny) => skyBake(x, y, z, ny));
     const partner = timber(1.15, 0.14, 0.66, 0.015, 10);
-    deckParts.push(xform(partner, trs(0, DECK_Y + 0.55, SHIP.mastZ)));
+    addDeck(xform(partner, trs(0, DECK_Y + 0.55, SHIP.mastZ)), () => 0.22,
+      (x, y, z, ny) => saltTint(ny, 0.9));
   }
 
   // ==========================================================================
@@ -758,14 +1260,363 @@ export function buildShip(quality = 'high') {
   }
 
   // ==========================================================================
+  // STOWAGE — what is actually aboard
+  //
+  // A galley on passage is not an empty shell with benches in it. It is stone
+  // ballast wedged along the keel, jars of water lashed at the mast step where
+  // the motion is least, cordage flaked down wherever there is a flat, spare
+  // oars along the clamp, a chest, a net, cloth, and the anchor stone forward
+  // where it can be got over the bow. Nothing here is centred, aligned or
+  // evenly spaced: it is wedged where it fits and lashed where it would
+  // otherwise take charge in a seaway.
+  // ==========================================================================
+
+  const R = lcg(20077);
+  const jit = (a) => (R() - 0.5) * 2 * a;
+
+  /**
+   * Place one piece of gear and record the placement so an authored GLB with
+   * the same id can be dropped straight into it later.
+   */
+  function place(id, x, y, z, ry = 0, opts = {}) {
+    const spec = GEAR[id];
+    const s = opts.s ?? 1;
+    const m = new THREE.Matrix4().compose(
+      new THREE.Vector3(x, y, z),
+      new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(opts.rx || 0, ry, opts.rz || 0, 'YXZ')),
+      new THREE.Vector3(s, s, s));
+    const seed = opts.seed ?? (placements.length * 37 + 11);
+    placements.push({ id, matrix: m, seed });
+    const g = spec.make(seed);
+    g.applyMatrix4(m);
+    applyBake(g, opts.bake || skyBake);
+    applyTint(g, opts.tint || flat);
+    GEAR_BUCKET[spec.mat].push(g);
+    GEAR_IDS[spec.mat].push(id);
+    return { m, x, y, z };
+  }
+  /** Extra loose geometry that belongs to a bucket but is not a swappable id. */
+  function addGear(key, g, bake = skyBake, tint = flat) {
+    applyBake(g, bake); applyTint(g, tint);
+    GEAR_BUCKET[key].push(g); GEAR_IDS[key].push(null);
+  }
+
+  // The ceiling: loose planking laid over the floor timbers, which is the
+  // floor of the ship as anybody aboard experiences it. It has to sit clear of
+  // the waterline — the sea surface is a single plane that cuts straight
+  // through the hull, and anything below it inside the ship is looking at the
+  // open Aegean. Measured in ship-local coordinates the sea never rises above
+  // +0.14 m even in a full gale, so 0.28 is honest and safe.
+  const CEIL_Y = 0.28;
+  const bilgeY = () => CEIL_Y;
+  const clampX = (z, y, margin) =>
+    Math.max(0.05, widthAt(z / SHIP.halfLen, y) - margin);
+
+  // Rowing benches every 0.93 m leave a gap between each pair; anything tall
+  // has to be stowed in a gap or it fouls a man's oar.
+  const BZ0 = -0.72 * SHIP.halfLen;
+  const BSTEP = (1.44 * SHIP.halfLen) / (SHIP.oarsPerSide - 1);
+  const gapZ = (z) => BZ0 + BSTEP * (Math.round((z - BZ0) / BSTEP - 0.5) + 0.5);
+
+  {
+    const z0 = -11.85, z1 = 10.30, N = 44;
+    const secs = [];
+    for (let i = 0; i <= N; i++) {
+      const t = i / N, z = z0 + (z1 - z0) * t;
+      const hw = Math.max(0.10, widthAt(z / SHIP.halfLen, CEIL_Y) - 0.04);
+      const y = CEIL_Y + Math.sin(z * 0.83) * 0.006 + Math.sin(z * 2.7) * 0.003;
+      secs.push([
+        new THREE.Vector3(-hw, y, z), new THREE.Vector3(hw, y, z),
+        new THREE.Vector3(hw * 0.985, y - 0.055, z),
+        new THREE.Vector3(-hw * 0.985, y - 0.055, z),
+      ]);
+    }
+    addGear('pine', loft(secs, { closed: true, flip: true, uvScale: new THREE.Vector2(3.4, 24) }),
+      (x, y, z, ny) => skyBake(x, y, z, ny),
+      (x, y, z, ny) => {
+        // permanently damp down the middle where the bilgewater lies
+        const damp = Math.exp(-Math.pow(x / 0.55, 2)) * Math.max(0, ny);
+        return [1 - damp * 0.34, 1 - damp * 0.35, 1 - damp * 0.33];
+      });
+    // a bulkhead closing the forward end of the well off from the hold
+    {
+      const hw = widthAt(z1 / SHIP.halfLen, 0.55) - 0.04;
+      addGear('pine', xform(timber(hw * 2, 0.62, 0.05, 0.008, 71), trs(0, CEIL_Y + 0.31, z1 + 0.05)),
+        (x, y, z, ny) => skyBake(x, y, z, ny) * 0.9);
+    }
+    // and the two limber boards you would lift to get at the bilge, one of
+    // them left out of its rebate because somebody was bailing
+    addGear('pine', xform(timber(0.30, 0.048, 1.15, 0.006, 72),
+      trs(0.62, CEIL_Y + 0.055, -3.4, 0.05, 0.03, 0.12)),
+      (x, y, z, ny) => skyBake(x, y, z, ny));
+  }
+
+  // --- ballast. Beach cobble, carried aboard by hand and laid over the floor
+  // timbers until she sat right. It is the floor amidships.
+  {
+    const kinds = ['ballast_stone_a', 'ballast_stone_b', 'ballast_stone_c'];
+    for (let i = 0; i < 96; i++) {
+      const z = -10.8 + R() * 20.6;
+      const y = bilgeY(z);
+      const lim = Math.min(1.55, clampX(z, y + 0.16, 0.18));
+      if (lim < 0.10) continue;
+      // heaped along the centreline and thinning outboard, the way stone
+      // settles when it is thrown in by hand
+      const x = (R() * 2 - 1) * lim * (0.45 + 0.55 * R());
+      const k = kinds[(R() * 3) | 0];
+      place(k, x, y + 0.012 + R() * 0.045, z, R() * 6.28, {
+        rz: jit(0.3), rx: jit(0.3), s: 0.8 + R() * 0.6,
+        bake: (px, py, pz, ny) => skyBake(px, py, pz, ny) * 0.78,
+        tint: () => { const k2 = 0.80 + R() * 0.34; return [k2, k2 * 0.99, k2 * 0.95]; },
+      });
+    }
+  }
+
+  // --- water and wine at the mast step, where a ship moves least. Each jar
+  // stands in a rope grommet in the gap between two thwarts, because a gap
+  // between two thwarts is the only place on this ship a jar fits.
+  {
+    const jars = [
+      ['amphora_water', 0.72, 1.4, 0.10], ['amphora_water', 1.06, 0.5, -0.18],
+      ['amphora_water', 0.80, -0.4, 0.22], ['amphora_wine', 1.18, -1.3, -0.30],
+      ['amphora_water', -0.76, 1.9, -0.12], ['amphora_wine', -1.10, 0.9, 0.24],
+      ['amphora_water', -0.82, 0.0, -0.20], ['amphora_wine', -1.22, -0.9, 0.16],
+      ['amphora_wine', 0.96, 2.4, 0.28], ['amphora_water', -0.94, -1.8, -0.22],
+    ];
+    const y = bilgeY() + 0.004;
+    for (const [id, x, z0, lean] of jars) {
+      const z = gapZ(z0);
+      place(id, x + jit(0.03), y, z + jit(0.05), R() * 6.28,
+        { rz: -Math.sign(x) * Math.abs(lean) * 0.40, rx: lean * 0.22 });
+      const t = new THREE.TorusGeometry(0.135, 0.024, 4, 10);
+      addGear('rope', xform(t, trs(x, y + 0.02, z, Math.PI / 2 + jit(0.15), 0, jit(0.15))));
+    }
+    // a lashing run along the row and taken round the frame heads
+    for (const side of [1, -1]) {
+      const path = [];
+      for (let i = 0; i <= 16; i++) {
+        const t = i / 16, z = -2.1 + 4.7 * t;
+        path.push(new THREE.Vector3(side * (0.98 + Math.sin(t * 5.3) * 0.20),
+          bilgeY() + 0.46 + Math.sin(t * 9) * 0.05, z));
+      }
+      addGear('rope', tube(path, 0.016, 4, { steps: 22, uvScale: new THREE.Vector2(1, 40) }));
+    }
+  }
+
+  // --- spare oars, lashed along the clamp on the thwart ends
+  {
+    const benchY = DECK_Y + 0.40;
+    const spares = [[1, -5.2], [1, 4.9], [1, -9.0], [-1, -2.4], [-1, 6.8], [-1, 9.2]];
+    for (const [side, z] of spares) {
+      const y = benchY + 0.062;
+      const x = side * (clampX(z, y + 0.10, 0.19) - 0.02);
+      place('oar_spare', x + jit(0.03), y, z + jit(0.25), jit(0.03),
+        { rz: side * (0.02 + Math.abs(jit(0.02))), rx: jit(0.012) });
+      // seizings holding them to the clamp
+      for (const dz of [-1.35, 1.25]) {
+        const t = new THREE.TorusGeometry(0.075, 0.014, 4, 9);
+        addGear('rope', xform(t, trs(x, y + 0.045, z + dz, 0, Math.PI / 2, jit(0.2))));
+      }
+    }
+  }
+
+  // --- cordage. Every flat surface on a ship ends up with a coil on it.
+  {
+    const foreY = (z) => DECK_Y + 0.55 + Math.pow(z / SHIP.halfLen, 4) * 0.55;
+    const aftY = (z) => DECK_Y + 0.62 + Math.pow(-z / SHIP.halfLen, 4) * 0.70;
+    place('rope_coil_lg', 0.62, foreY(12.5) + 0.01, 12.5, R() * 6.28, { bake: () => 0.75 });
+    place('rope_coil_sm', -0.72, foreY(13.1) + 0.01, 13.1, R() * 6.28, { bake: () => 0.75 });
+    place('rope_coil_lg', -0.80, aftY(-12.4) + 0.01, -12.4, R() * 6.28, { bake: () => 0.72 });
+    place('rope_coil_sm', 0.86, aftY(-12.9) + 0.01, -12.9, R() * 6.28, { bake: () => 0.72 });
+    // on the thwarts
+    place('rope_coil_sm', 1.34, DECK_Y + 0.44, gapZ(-4.6) + 0.02, R() * 6.28);
+    place('rope_coil_sm', -1.22, DECK_Y + 0.44, gapZ(3.2) + 0.02, R() * 6.28);
+    // and down in the well
+    place('rope_coil_lg', 0.92, bilgeY() + 0.005, gapZ(6.4), R() * 6.28, { rz: 0.04 });
+    place('rope_coil_sm', -0.95, bilgeY() + 0.005, gapZ(-7.9), R() * 6.28);
+    place('net_bundle', -1.16, bilgeY() + 0.005, gapZ(4.6), 0.22 + jit(0.2));
+    place('net_bundle', 1.24, bilgeY() + 0.005, gapZ(-2.6), -0.35 + jit(0.2));
+  }
+
+  // --- buckets and bailers. A galley leaks and somebody is always bailing.
+  {
+    const b1 = place('bucket', -0.40, GANG_Y + 0.012, SHIP.mastZ + 0.62, R() * 6.28,
+      { bake: () => 0.62 });
+    addGear('rope', xform(bucketBail(3), trs(b1.x, b1.y, b1.z, 0, R() * 3, 0)), () => 0.6);
+    // lashed to the mast partner so it does not take charge
+    addGear('rope', tube([
+      new THREE.Vector3(-0.40, GANG_Y + 0.20, SHIP.mastZ + 0.62),
+      new THREE.Vector3(-0.22, GANG_Y + 0.26, SHIP.mastZ + 0.38),
+      new THREE.Vector3(-0.10, GANG_Y + 0.14, SHIP.mastZ + 0.10),
+    ], 0.013, 4, { steps: 8 }), () => 0.6);
+
+    const b2 = place('bucket', 0.98, bilgeY() + 0.005, gapZ(-6.4), R() * 6.28, { rz: 0.04 });
+    addGear('rope', xform(bucketBail(9), trs(b2.x, b2.y, b2.z, 0, R() * 3, 0.05)));
+    place('bucket', -0.86, DECK_Y + 0.55 + 0.02, 12.9, R() * 6.28, { bake: () => 0.7 });
+
+    place('bailer', -0.58, bilgeY() + 0.005, gapZ(-1.9), 1.1 + jit(0.4), { rz: -0.06 });
+    place('bailer', 1.06, bilgeY() + 0.005, gapZ(8.1), -0.6 + jit(0.4));
+  }
+
+  // --- the sea chest, wedged between two frames and lashed down
+  {
+    const cz = gapZ(-8.5), cy = bilgeY() + 0.004;
+    place('sea_chest', 1.06, cy, cz, jit(0.05), { seed: 31 });
+    addGear('rope', xform(chestLashing(31), trs(1.06, cy, cz, 0, 0, 0)));
+    // cloth thrown over the top of it, because there is nowhere else
+    place('folded_sail', 1.04, cy + 0.40, cz + 0.02, jit(0.18),
+      { s: 0.62, seed: 44 });
+  }
+
+  // --- folded sailcloth stowed aft
+  {
+    const z = gapZ(-7.0), y = bilgeY() + 0.004;
+    place('folded_sail', -1.05, y, z, 1.60 + jit(0.10), { s: 0.85, seed: 12 });
+    addGear('rope', xform(bundleLashing(1.05, 0.30, 12), trs(-1.05, y, z, 0, 1.60, 0)));
+  }
+
+  // ==========================================================================
+  // THE FORWARD HOLD
+  // ==========================================================================
+
+  {
+    // The sole of the hold has the same problem the well had, and less room to
+    // solve it in: the sea plane crosses the hull here at y=0 and the fore deck
+    // is only a metre above it. So the boards go at 0.18 — clear of the water —
+    // and the player's foot reference stays lower, at HOLD_Y, so a crouched man
+    // still fits under the deck. In first person nobody can see his own feet,
+    // and what he does see is a crawl space he is kneeling in.
+    const SOLE_Y = 0.18;
+    const secs = [];
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20, z = 10.25 + (13.95 - 10.25) * t;
+      const hw = Math.max(0.07, widthAt(z / SHIP.halfLen, SOLE_Y) - 0.035);
+      const y = SOLE_Y + Math.sin(z * 2.1) * 0.005;
+      secs.push([
+        new THREE.Vector3(-hw, y, z), new THREE.Vector3(hw, y, z),
+        new THREE.Vector3(hw * 0.96, y - 0.05, z),
+        new THREE.Vector3(-hw * 0.96, y - 0.05, z),
+      ]);
+    }
+    addGear('pine', loft(secs, { closed: true, flip: true, uvScale: new THREE.Vector2(0.7, 9) }),
+      skyBake, (x, y, z, ny) => {
+        const tread = Math.exp(-Math.pow(x / 0.34, 2)) * Math.max(0, ny);
+        return [1 - tread * 0.22, 1 - tread * 0.23, 1 - tread * 0.26];
+      });
+
+    // a ladder down through the hatch
+    for (const sd of [1, -1]) {
+      addGear('pine', tube([
+        new THREE.Vector3(sd * 0.20, GANG_Y - 0.02, 10.62),
+        new THREE.Vector3(sd * 0.22, SOLE_Y, 10.95),
+      ], 0.036, 6, { steps: 4 }), () => 0.5);
+    }
+    for (let k = 0; k < 3; k++) {
+      const t = (k + 0.5) / 3;
+      addGear('pine', xform(timber(0.50, 0.030, 0.075, 0.006, 60 + k),
+        trs(0, GANG_Y - 0.02 + (SOLE_Y - GANG_Y + 0.02) * t, 10.62 + 0.33 * t)),
+        () => 0.45);
+    }
+
+    // the anchor: a pierced stone, with its cable flaked down beside it
+    place('anchor_stone', 0.30, SOLE_Y, 13.05, 0.6 + jit(0.3), { rz: 0.10, seed: 5 });
+    place('rope_coil_lg', -0.30, SOLE_Y + 0.01, 12.75, R() * 6.28, { s: 0.78 });
+    // stores
+    place('pithos_sm', -0.46, SOLE_Y, 11.25, R() * 6.28, { rz: 0.04, s: 0.9 });
+    place('pithos_sm', 0.54, SOLE_Y, 10.95, R() * 6.28, { rz: -0.03, s: 0.85 });
+    place('amphora_water', -0.34, SOLE_Y, 11.95, R() * 6.28, { rz: 0.10, s: 0.9 });
+    place('amphora_wine', 0.38, SOLE_Y, 12.30, R() * 6.28, { rz: -0.12, s: 0.9 });
+    place('folded_sail', 0.02, SOLE_Y, 10.62, 1.55 + jit(0.2), { s: 0.75, seed: 88 });
+    place('oil_lamp', 0.52, SOLE_Y + 0.005, 11.55, R() * 6.28, { bake: () => 0.30 });
+    place('bailer', -0.48, SOLE_Y, 11.75, 0.4 + jit(0.4));
+  }
+
+  // ==========================================================================
+  // DECK FITTINGS AT HAND DISTANCE
+  // ==========================================================================
+
+  {
+    // cleats on the clamp: everything that comes to hand is belayed to one
+    const zs = [-9.7, -3.15, 2.25, 9.35];
+    let ci = 0;
+    for (const side of [1, -1]) {
+      for (const z of zs) {
+        const u = z / SHIP.halfLen;
+        const y = sheerAt(u) - 0.20 + 0.052;
+        const x = side * (widthAt(u, y - 0.05) - 0.075);
+        const seed = 900 + ci * 17;
+        const m = trs(x, y, z, 0, Math.PI / 2 + jit(0.05), 0);
+        placements.push({ id: 'cleat', matrix: m.clone(), seed });
+        addGear('pine', xform(GEAR.cleat.make(seed), m),
+          (px, py, pz, ny) => Math.min(1, skyBake(px, py, pz, ny) * 1.3),
+          (px, py, pz, ny) => saltTint(ny, 0.8));
+        GEAR_IDS.pine[GEAR_IDS.pine.length - 1] = 'cleat';
+        // and the turns of rope on it — a cleat with nothing on it is scenery
+        if (ci % 4 !== 3) {
+          addGear('rope', xform(ropeTurns(0.085, 0.036, 3, 0.016, seed),
+            trs(x, y, z, 0, Math.PI / 2, 0)),
+            (px, py, pz, ny) => Math.min(1, skyBake(px, py, pz, ny) * 1.3));
+        }
+        ci++;
+      }
+    }
+
+    // kevels either side of the mast partner: the halyard to starboard, the
+    // brail falls to port. This is the spot the player stands at to make sail.
+    const kY = DECK_Y + 0.55 + 0.072;
+    for (const side of [1, -1]) {
+      const seed = 950 + (side > 0 ? 1 : 2);
+      const m = trs(side * 0.40, kY, SHIP.mastZ, 0, Math.PI / 2, 0);
+      placements.push({ id: 'cleat', matrix: m.clone(), seed });
+      addGear('pine', xform(GEAR.cleat.make(seed), m), () => 0.34,
+        (px, py, pz, ny) => saltTint(ny, 0.8));
+      GEAR_IDS.pine[GEAR_IDS.pine.length - 1] = 'cleat';
+      addGear('rope', xform(ropeTurns(0.095, 0.038, 4, 0.017, seed),
+        trs(side * 0.40, kY, SHIP.mastZ, 0, Math.PI / 2, 0)), () => 0.34);
+    }
+
+    // the halyard: masthead, down abaft the mast, three turns on the kevel,
+    // and the tail flaked down on the catwalk where it will run clear
+    addGear('rope', tube([
+      new THREE.Vector3(0.055, mastTop - 0.30, SHIP.mastZ + 0.12),
+      new THREE.Vector3(0.16, mastTop * 0.55, SHIP.mastZ + 0.20),
+      new THREE.Vector3(0.30, DECK_Y + 1.55, SHIP.mastZ + 0.10),
+      new THREE.Vector3(0.40, kY + 0.05, SHIP.mastZ + 0.02),
+    ], 0.017, 5, { steps: 26, uvScale: new THREE.Vector2(1, 90) }), () => 0.5);
+    place('rope_coil_sm', 0.30, GANG_Y + 0.012, SHIP.mastZ - 1.05, R() * 6.28,
+      { s: 0.92, bake: () => 0.55 });
+
+    // The brail falls. Only the inner five come down to the deck — the outer
+    // ones are led along the yard first, and running all nine across the ship
+    // at head height turns the whole waist into a cat's cradle.
+    for (let i = 2; i <= 6; i++) {
+      const x = -(SHIP.yardLength * 0.90) / 2 + (SHIP.yardLength * 0.90 * i) / 8;
+      const y0 = yardPivot.position.y - 6.5 - 0.15;
+      addGear('rope', tube([
+        new THREE.Vector3(x, y0, yardPivot.position.z + 0.10),
+        new THREE.Vector3(x * 0.34, y0 - 1.55, SHIP.mastZ + 0.26),
+        new THREE.Vector3(-0.30, kY + 0.34, SHIP.mastZ + 0.05),
+        new THREE.Vector3(-0.40, kY + 0.06, SHIP.mastZ - 0.02),
+      ], 0.010, 4, { steps: 18, uvScale: new THREE.Vector2(1, 60) }),
+        (px, py) => 0.55 + 0.35 * THREE.MathUtils.clamp((py - 1.0) / 2.5, 0, 1));
+    }
+
+    // a block hanging off each kevel, and a spare on the fore deck
+    place('block_sheave', 0.52, kY + 0.30, SHIP.mastZ + 0.16, 0.3, { bake: () => 0.45 });
+    place('block_sheave', -0.66, DECK_Y + 0.57, 12.15, 1.1, { bake: () => 0.7 });
+  }
+
+  // ==========================================================================
   // merge and attach
   // ==========================================================================
 
-  const woodMesh = new THREE.Mesh(mergeGeometries(woodParts), mastMat);
+  const woodMesh = new THREE.Mesh(mergeAttributed(woodParts, MERGE_ATTRS), structMat);
   woodMesh.castShadow = true; woodMesh.receiveShadow = true;
   root.add(woodMesh);
 
-  const deckMesh = new THREE.Mesh(mergeGeometries(deckParts), deckMat);
+  const deckMesh = new THREE.Mesh(mergeAttributed(deckParts, MERGE_ATTRS),
+    bakedMaterial(deckMat));
   deckMesh.castShadow = true; deckMesh.receiveShadow = true;
   root.add(deckMesh);
 
@@ -773,6 +1624,48 @@ export function buildShip(quality = 'high') {
   ropeMesh.castShadow = true;
   root.add(ropeMesh);
 
+  // pitched topsides, plus the pitch payed into the catwalk seams
+  {
+    const m = new THREE.Mesh(mergeGeometries([pitchShell, ...tarParts]), pitchMat);
+    m.castShadow = true; m.receiveShadow = true;
+    root.add(m);
+  }
+
+  // --- the stowage, one draw call per material -----------------------------
+  // None of it casts a shadow: it all lives inside a hull that is already
+  // casting one, and fifty extra shadow-map draws for gear nobody can see the
+  // shadow of is the most expensive nothing in the frame.
+  const gearMeshes = {};
+  function buildGearMesh(key, parts) {
+    if (!parts.length) return null;
+    const mesh = new THREE.Mesh(mergeAttributed(parts, MERGE_ATTRS), MAT_BY_KEY[key]);
+    mesh.castShadow = false; mesh.receiveShadow = true;
+    mesh.name = 'gear_' + key;
+    root.add(mesh);
+    gearMeshes[key] = mesh;
+    return mesh;
+  }
+  for (const [key, parts] of Object.entries(GEAR_BUCKET)) buildGearMesh(key, parts);
+
+  root.userData.fittings = {
+    placements,
+    meshes: gearMeshes,
+    bakeAt: skyBake,
+    /** Re-merge every bucket, dropping the ids an authored GLB now covers. */
+    rebuild(done) {
+      for (const [key, parts] of Object.entries(GEAR_BUCKET)) {
+        const mesh = gearMeshes[key];
+        if (!mesh) continue;
+        const ids = GEAR_IDS[key];
+        const keep = parts.filter((_, i) => !done.has(ids[i]));
+        if (keep.length === parts.length) continue;
+        mesh.geometry.dispose();
+        if (!keep.length) { mesh.visible = false; continue; }
+        mesh.geometry = mergeAttributed(keep, MERGE_ATTRS);
+        mesh.visible = true;
+      }
+    },
+  };
   root.userData.deckY = DECK_Y;
   root.userData.beamAt = beamAt;
   root.userData.sheerAt = sheerAt;
@@ -792,8 +1685,8 @@ export function buildShip(quality = 'high') {
     gangZ: [-11.5, 11.4],
     // the forward hold: a low space under the fore deck where the water jars,
     // the anchor stones and the spare cordage live. You go in bent double.
-    holdZ: [10.4, 14.3],
-    holdY: -0.46,
+    holdZ: [10.35, 13.9],
+    holdY: HOLD_Y,
     hatchZ: 11.0,
   };
 
@@ -805,7 +1698,12 @@ export function buildShip(quality = 'high') {
     const w = root.userData.walk;
     const u = z / HALF;
     if (below) {
-      if (z > w.holdZ[0] && z < w.holdZ[1] && Math.abs(x) < beamAt(u) - 0.32) {
+      // The hold is a wedge, not a room: forward of the hatch the sole runs out
+      // to a knife edge, so the walkable width has to follow the actual hull
+      // rather than the beam at the sheer — otherwise you walk out through the
+      // planking somewhere around the anchor stone.
+      if (z > w.holdZ[0] && z < w.holdZ[1]
+          && Math.abs(x) < Math.max(0.13, widthAt(u, 0.22) - 0.17)) {
         return w.holdY;
       }
       return null;
@@ -828,6 +1726,103 @@ export function buildShip(quality = 'high') {
 }
 
 // ---------------------------------------------------------------------------
+// Authored assets
+// ---------------------------------------------------------------------------
+
+/**
+ * Swap procedural fittings for Blender-authored ones wherever the asset
+ * library actually has them.
+ *
+ * Every piece of gear aboard was placed as an { id, matrix } pair against the
+ * PIVOT.BASE convention the exporter uses, so an authored `cleat` drops into
+ * exactly the transform the procedural cleat occupied. Ids the library does
+ * not have are left alone, which means this can be called at any point in the
+ * pipeline — before the GLBs exist, half way through authoring them, or after
+ * — and the ship is always complete.
+ *
+ * One InstancedMesh per (id, submesh) keeps the swap from costing draw calls:
+ * seventy-eight authored ballast stones stay a single call, as they must.
+ *
+ * @param {THREE.Group} ship
+ * @param {import('../core/assets.js').AssetLibrary} assets
+ * @returns {{swapped: string[], counts: object, skipped: string[]}}
+ */
+export function applyAuthoredFittings(ship, assets) {
+  const f = ship.userData.fittings;
+  if (!f || !assets) return { swapped: [], counts: {}, skipped: [] };
+
+  // group placements by id
+  const byId = new Map();
+  for (const p of f.placements) {
+    if (!byId.has(p.id)) byId.set(p.id, []);
+    byId.get(p.id).push(p);
+  }
+
+  const swapped = [], skipped = [], counts = {};
+  if (f.authored) { ship.remove(f.authored); f.authored = null; }
+  const holder = new THREE.Group();
+  holder.name = 'authoredFittings';
+
+  for (const [id, list] of byId) {
+    if (!assets.has(id)) { skipped.push(id); continue; }
+    const src = assets.instance(id);
+    if (!src) { skipped.push(id); continue; }
+    // collect the source meshes with their own local transforms baked in
+    src.updateMatrixWorld(true);
+    const subs = [];
+    src.traverse((o) => {
+      if (!o.isMesh) return;
+      // LOD spares are named _LOD1/_LOD2 and must not be drawn as well
+      if (/_LOD[1-9]$/.test(o.name)) return;
+      subs.push({ geom: o.geometry, mat: o.material, local: o.matrixWorld.clone() });
+    });
+    if (!subs.length) { skipped.push(id); continue; }
+
+    // Per-instance bounce: the same baked term the procedural gear uses, so
+    // an authored bucket down in the bilge is as dark as the stones beside it
+    // instead of floating out of the scene lit by ambient alone.
+    const bake = new Float32Array(list.length * 2);
+    const pos = new THREE.Vector3();
+    for (let i = 0; i < list.length; i++) {
+      pos.setFromMatrixPosition(list[i].matrix);
+      const v = f.bakeAt ? Math.min(1, f.bakeAt(pos.x, pos.y + 0.15, pos.z, 0.35)) : 0.4;
+      bake[i * 2] = v; bake[i * 2 + 1] = v;
+    }
+
+    for (const s of subs) {
+      const geom = s.geom.clone();
+      geom.setAttribute('aBake', new THREE.InstancedBufferAttribute(bake, 2));
+      const mat = (Array.isArray(s.mat) ? s.mat[0] : s.mat).clone();
+      bakedMaterial(mat, false);
+      const inst = new THREE.InstancedMesh(geom, mat, list.length);
+      inst.castShadow = false;
+      inst.receiveShadow = true;
+      inst.frustumCulled = false;
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < list.length; i++) {
+        m.multiplyMatrices(list[i].matrix, s.local);
+        inst.setMatrixAt(i, m);
+      }
+      inst.instanceMatrix.needsUpdate = true;
+      holder.add(inst);
+    }
+    swapped.push(id);
+    counts[id] = list.length;
+  }
+
+  if (!swapped.length) return { swapped, counts, skipped };
+
+  // Rebuild the procedural buckets without the ids that were swapped. The
+  // buckets are merged by material, so this is a rebuild rather than a hide —
+  // but it happens once, at load, and it keeps the draw-call count flat.
+  ship.add(holder);
+  f.authored = holder;
+  const done = new Set(swapped);
+  if (f.rebuild) f.rebuild(done);
+  return { swapped, counts, skipped };
+}
+
+// ---------------------------------------------------------------------------
 // Runtime animation
 // ---------------------------------------------------------------------------
 
@@ -836,8 +1831,33 @@ export function buildShip(quality = 'high') {
  * @param {object} s  { yardAngle, sailBelly, brail, oarPhase, oarsOut,
  *                      rudder, sunDir, sunColor, sunIntensity, ambient, eye, wet }
  */
+const _bounceTmp = new THREE.Color();
+
 export function updateShip(ship, dt, s) {
   const ud = ship.userData;
+
+  // --- interior bounce ---------------------------------------------------
+  // One colour, written once a frame, drives every baked surface in the ship.
+  // Two sources: skylight coming straight down the open deck, which is simply
+  // the ambient the rest of the scene already uses; and light off the sea,
+  // which is the sun reflected once and therefore warm, weak, and strongly
+  // dependent on how high the sun is. The sea term is what puts light on the
+  // underside of the gunwale and stops the well going flat.
+  if (s.ambient) {
+    const alt = s.sunDir ? Math.max(0, s.sunDir.y) : 0;
+    const sea = (s.sunIntensity || 0) * (0.05 + 0.17 * Math.sqrt(alt)) * (s.wet ? 1.15 : 1.0);
+    _bounceTmp.copy(s.ambient).multiplyScalar(2.6);
+    if (s.sunColor) {
+      _bounceTmp.r += s.sunColor.r * sea * 1.00;
+      _bounceTmp.g += s.sunColor.g * sea * 1.02;
+      _bounceTmp.b += s.sunColor.b * sea * 0.92;
+    }
+    // A floor, so the well is never a hole in the world. On a clear Aegean
+    // night there is starlight on the water and a man can see the shape of the
+    // thwart in front of him; he simply cannot see its colour.
+    _bounceTmp.r += 0.013; _bounceTmp.g += 0.016; _bounceTmp.b += 0.026;
+    BOUNCE.value.copy(_bounceTmp);
+  }
 
   if (ud.yardPivot) ud.yardPivot.rotation.y = s.yardAngle || 0;
 

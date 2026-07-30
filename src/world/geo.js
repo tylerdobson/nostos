@@ -227,6 +227,81 @@ export function mergeGeometries(geoms) {
   return out;
 }
 
+/**
+ * Reverse the winding of every triangle and flip the normals.
+ *
+ * loft(), tube() and revolve() all emit their first triangle as
+ * (j, j+1, i+1), which for the orientations used throughout the game puts the
+ * front face on the INSIDE of the surface: a tube built along +Z has its
+ * normals pointing at its own axis, and a revolved pot faces its own middle.
+ * With FrontSide culling that means you never see the near wall of anything —
+ * you see the far wall from behind, shaded by a normal pointing at you. On a
+ * mast or an oar the silhouette is identical so it goes unnoticed; on the
+ * inside of a hull it means the hull is not there at all.
+ *
+ * Rather than change the shared builders under crew.js, scenes.js and
+ * encounters.js mid-flight, this fixes a geometry after the fact, and otube /
+ * orevolve wrap the two builders that always want it.
+ */
+export function flipFaces(geom) {
+  const idx = geom.index;
+  if (idx) {
+    const a = idx.array;
+    for (let i = 0; i < a.length; i += 3) { const t = a[i]; a[i] = a[i + 2]; a[i + 2] = t; }
+    idx.needsUpdate = true;
+  }
+  const n = geom.attributes.normal;
+  if (n) {
+    const a = n.array;
+    for (let i = 0; i < a.length; i++) a[i] = -a[i];
+    n.needsUpdate = true;
+  }
+  return geom;
+}
+
+/** tube(), wound so the outside of the tube is the front face. */
+export function otube(...args) { return flipFaces(tube(...args)); }
+
+/** revolve(), wound so the outside of the solid is the front face. */
+export function orevolve(...args) { return flipFaces(revolve(...args)); }
+
+/**
+ * Merge, carrying extra vertex attributes as well as position/normal/uv.
+ *
+ * `extras` maps attribute name -> { size, fill }. Any geometry in the batch
+ * that lacks the attribute is filled with `fill`, so a hand-authored part and
+ * a generated one can be merged without either knowing about the other. This
+ * is how the baked interior-bounce term and the per-vertex wear tint survive
+ * being merged down into a single draw call.
+ */
+export function mergeAttributed(geoms, extras = {}) {
+  const base = mergeGeometries(geoms);
+  if (!base) return null;
+  for (const [name, spec] of Object.entries(extras)) {
+    const size = spec.size ?? 1;
+    const fill = spec.fill ?? 0;
+    let total = 0;
+    for (const g of geoms) total += g.attributes.position.count;
+    const arr = new Float32Array(total * size);
+    let off = 0;
+    for (const g of geoms) {
+      const n = g.attributes.position.count;
+      const src = g.attributes[name];
+      if (src && src.itemSize === size) {
+        arr.set(src.array.subarray(0, n * size), off * size);
+      } else {
+        const f = Array.isArray(fill) ? fill : new Array(size).fill(fill);
+        for (let i = 0; i < n; i++) {
+          for (let k = 0; k < size; k++) arr[(off + i) * size + k] = f[k];
+        }
+      }
+      off += n;
+    }
+    base.setAttribute(name, new THREE.BufferAttribute(arr, size));
+  }
+  return base;
+}
+
 /** Apply a matrix to a geometry in place and return it (for merging). */
 export function xform(geom, matrix) {
   geom.applyMatrix4(matrix);
