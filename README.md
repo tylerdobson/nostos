@@ -49,7 +49,6 @@ npm run dev        # http://127.0.0.1:5273
 
 ## Controls
 
-Click the canvas to capture the pointer.
 
 | Input | Action |
 |---|---|
